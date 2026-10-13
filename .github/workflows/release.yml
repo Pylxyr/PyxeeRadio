@@ -244,7 +244,7 @@ jobs:
         working-directory: app
         run: npx tauri build --no-bundle
       - name: Package the tarball
-        run: scripts/package-linux.sh "$VERSION"
+        run: bash scripts/package-linux.sh "$VERSION"
       # Unpack the tarball the way a user would and run the frozen core from where it landed: this proves
       # the layout (core/, bin/ with ffmpeg and QuickJS) is what the app expects.
       - name: Unpacked tarball works
