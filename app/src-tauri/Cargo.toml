@@ -1,0 +1,42 @@
+[package]
+name = "pyxee-radio"
+version = "1.3.0"
+description = "PyxeeRadio: desktop control panel for the song-request radio"
+authors = ["PyxeeRadio"]
+license = "Unlicense"
+edition = "2021"
+rust-version = "1.85"
+
+[[bin]]
+name = "PyxeeRadio"
+path = "src/main.rs"
+
+[lib]
+name = "pyxee_radio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = ["wry", "tray-icon", "image-png", "compression"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "rt", "macros"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+url = "2"
+
+[profile.release]
+opt-level = "s"      # small, not fast: this is a control panel
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Debug builds (cargo test, tauri dev) keep no debug info: the symbols of ~500 crates take gigabytes of disk and minutes to link.
+[profile.dev]
+debug = 0
