@@ -117,9 +117,7 @@ def test_suggest_many_never_repeats_what_was_just_picked_and_survives_a_failed_l
     suggester = RadioSuggester(resolver)  # type: ignore[arg-type]
     run(suggester.suggest_many(url(1), 2, exclude_ids=set()))
     assert run(suggester.suggest_many(url(1), 2, exclude_ids=set())) == []  # all used up recently
-    assert (
-        run(RadioSuggester(resolver).suggest_many(url(99), 3, exclude_ids=set())) == []
-    )  # lookup raised  # type: ignore[arg-type]
+    assert run(RadioSuggester(resolver).suggest_many(url(99), 3, exclude_ids=set())) == []  # lookup raised  # type: ignore[arg-type]
     assert run(RadioSuggester(resolver).suggest_many("not a youtube url", 3, exclude_ids=set())) == []  # type: ignore[arg-type]
 
 
