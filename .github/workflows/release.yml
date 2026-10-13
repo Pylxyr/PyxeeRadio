@@ -179,7 +179,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release | Out-Null
           # GitHub turns spaces in asset names into dots; name the file as users will receive it.
           Copy-Item $built.FullName "release/PyxeeRadio.Setup.$env:VERSION.exe"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-windows
           path: release/*
@@ -263,7 +263,7 @@ jobs:
           test -f "$f" || { echo "Not found: $f"; exit 1; }
           cp "$f" release/
           ls -la release
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux
           path: release/*
