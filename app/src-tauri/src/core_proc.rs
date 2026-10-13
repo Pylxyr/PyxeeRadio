@@ -280,7 +280,10 @@ pub fn kill_now(sh: &Sh) {
     }
     if let Some(pid) = sh.core.pid() {
         #[cfg(windows)]
-        let _ = std::process::Command::new("taskkill").args(["/pid", &pid.to_string(), "/T", "/F"]).status();
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill").args(["/pid", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).status();
+        }
         #[cfg(unix)]
         let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).status();
     }
