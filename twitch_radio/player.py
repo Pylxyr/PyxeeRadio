@@ -329,11 +329,16 @@ SKIP_NOT_READY_MESSAGE = (
 )
 
 
+SKIP_PAUSED_MESSAGE = "Playback is paused. Resume it first."
+
+
 class SkipResult(str, Enum):
     """How a skip request ended (see RadioPlayer.skip)."""
 
     SKIPPED = "skipped"
     NOTHING_PLAYING = "nothing_playing"
+    # Playback was paused by hand: there is nothing to skip until it is resumed.
+    PAUSED = "paused"
     # The song that would play next is not ready yet, so the current one was left playing.
     NOT_READY = "not_ready"
 
@@ -955,9 +960,10 @@ class RadioPlayer:
             self._fire_and_forget(self._persist_queue(), name="persist-queue")
         return removed
 
-    def _interrupt_current(self) -> bool:
+    def _interrupt_current(self, *, count_as_skip: bool = True) -> bool:
         """Cuts the current song (or the load of it) short, right now and without asking whether
-        anything is ready to follow. skip() is the gated way in; pause() uses this directly."""
+        anything is ready to follow. skip() is the gated way in; pause() uses this directly (and
+        a pause is not a skip: it must not show up in the skip count)."""
         decoder = self._current_decoder
         if decoder is not None:
             if decoder is self._cut:
@@ -965,14 +971,22 @@ class RadioPlayer:
             self._cut = decoder
             with contextlib.suppress(ProcessLookupError):
                 decoder.kill()
-            counters.record("skips")
+            if count_as_skip:
+                counters.record("skips")
             return True
         if self._resolving:
             if not self._skip_pending:
                 self._skip_pending = True
-                counters.record("skips")
+                if count_as_skip:
+                    counters.record("skips")
             return True
         return False
+
+    def _is_being_cut(self) -> bool:
+        """True while the current song has already been skipped (or paused) and is only being wound down."""
+        return (
+            self._current_decoder is not None and self._current_decoder is self._cut
+        ) or self._skip_pending
 
     async def skip(self, wait: float = _SKIP_READY_WAIT_SECONDS) -> SkipResult:
         """Skips the current song, but only once the song that follows it is ready to play.
@@ -987,6 +1001,8 @@ class RadioPlayer:
 
         Skips asked for while one is waiting join it instead of each cutting another song.
         """
+        if self._paused:
+            return SkipResult.PAUSED
         if self._skip_waiter is not None:
             return await asyncio.shield(self._skip_waiter)
         if self._current_decoder is None and not self._resolving:
@@ -1010,7 +1026,7 @@ class RadioPlayer:
         try:
             while True:
                 if self._paused:
-                    return SkipResult.NOTHING_PLAYING
+                    return SkipResult.PAUSED
                 if self._active_request is not target:
                     return SkipResult.SKIPPED  # it ended while we waited: never cut the next one short
                 if self._current_decoder is None and not self._resolving:
@@ -1062,7 +1078,9 @@ class RadioPlayer:
             return False
         self._paused = True
         active = self._active_request
-        if active is not None and not active.cancelled:
+        # A song that was skipped a moment ago is still winding down until its decoder is gone: it
+        # must not come back on resume. (Only a song the pause itself interrupts is kept.)
+        if active is not None and not active.cancelled and not self._is_being_cut():
             resumed = QueuedRequest(
                 webpage_url=self._now_playing.webpage_url if self._now_playing else active.webpage_url,
                 requester_id=active.requester_id,
@@ -1074,7 +1092,7 @@ class RadioPlayer:
             )
             self._pending.insert(0, resumed)
             self._fire_and_forget(self._persist_queue(), name="persist-queue")
-        self._interrupt_current()
+        self._interrupt_current(count_as_skip=False)
         # Whatever was being prepared for after the interrupted track is no
         # longer next — the interrupted track is. Free its decoders now
         # rather than letting them idle for however long the pause lasts.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the small ffmpeg that Twitch Radio ships, from pinned, checksum-verified source.
+# Builds the small ffmpeg that PyxeeRadio ships, from pinned, checksum-verified source.
 #
 #   packaging/ffmpeg/build.sh linux   <out-dir>   # native build on Linux
 #   packaging/ffmpeg/build.sh windows <out-dir>   # cross-compile on Linux with mingw-w64

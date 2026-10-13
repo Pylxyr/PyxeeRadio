@@ -15,6 +15,18 @@ updates:
       yt-dlp:
         patterns: [yt-dlp, certifi, requests, urllib3]
   - package-ecosystem: npm
-    directory: /gui
+    directory: /app
     schedule:
       interval: weekly
+    groups:
+      # The page's build tools move together (vite, the svelte plugin, vitest...).
+      frontend:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /app/src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      # Tauri's crates and plugins are released as a set.
+      tauri:
+        patterns: [tauri, tauri-*]

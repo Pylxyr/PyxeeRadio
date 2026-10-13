@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Twitch Radio measurement probe.
+"""PyxeeRadio measurement probe.
 
 Read-only: it measures and prints, and changes nothing in the repo. It needs
 psutil, which the bot itself does not (`pip install psutil` into any Python).
@@ -8,7 +8,7 @@ Run from the repo root, for example:
     python scripts/probe.py env
     python scripts/probe.py audio
     python scripts/probe.py tree --match "bot.py" --seconds 180
-    python scripts/probe.py tree --match "Twitch Radio" --seconds 180   # the desktop app
+    python scripts/probe.py tree --match "PyxeeRadio" --seconds 180   # the desktop app
     python scripts/probe.py resolve --url URL --query "artist song"
 """
 
@@ -322,16 +322,18 @@ def classify(name: str, cmd: list[str]) -> str:
             return "core-oneshot" + flag
     if "--headless" in s or "bot.py" in s or "twitchradiocore" in n:
         return "core"
-    if "--type=renderer" in s:
-        return "electron-renderer"
-    if "--type=gpu-process" in s:
-        return "electron-gpu"
-    if "--type=utility" in s:
-        return "electron-utility"
-    if "--type=crashpad" in s:
-        return "electron-crashpad"
-    if "electron" in n or "twitch radio" in n or "twitchradio" in n:
-        return "electron-main/node"
+    # the desktop shell (Tauri) and the web engine it uses: WebKitGTK's helper processes on Linux,
+    # WebView2's msedgewebview2 on Windows
+    if "webkitwebprocess" in n:
+        return "webview-page"
+    if "webkitnetworkprocess" in n:
+        return "webview-network"
+    if "webkitgpuprocess" in n:
+        return "webview-gpu"
+    if "msedgewebview2" in n:
+        return "webview-" + ("page" if "--type=renderer" in s else "other")
+    if n in ("pyxeeradio", "pyxeeradio.exe") or "twitch radio" in n:
+        return "shell"
     if n.startswith(("deno", "node", "qjs", "quickjs")):
         return "js-runtime"
     return name
@@ -526,9 +528,7 @@ def main() -> None:
     s.set_defaults(fn=cmd_audio)
 
     s = sub.add_parser("tree", help="sample CPU+memory of a running app and all its children")
-    s.add_argument(
-        "--match", help="substring of process name or command line, e.g. 'bot.py' or 'Twitch Radio'"
-    )
+    s.add_argument("--match", help="substring of process name or command line, e.g. 'bot.py' or 'PyxeeRadio'")
     s.add_argument("--root-pid", type=int)
     s.add_argument("--seconds", type=int, default=120)
     s.add_argument("--interval", type=float, default=1.0)

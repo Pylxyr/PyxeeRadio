@@ -259,19 +259,6 @@ class Settings:
     overlay_delay_seconds: float = 4.0
 
 
-HOST_JS_ENV = "TWITCH_RADIO_HOST_JS_EXE"
-
-
-def _host_js_runtime() -> str | None:
-    """Path of the desktop app executable that launched this core, if it handed one over.
-
-    Only the packaged desktop app sets it (gui/main.js). Never run this executable without
-    ELECTRON_RUN_AS_NODE=1: it is the full GUI application.
-    """
-    exe = os.getenv(HOST_JS_ENV, "").strip()
-    return exe if exe and Path(exe).is_file() else None
-
-
 def load_settings() -> Settings:
     ensure_home()
     reload_env()
@@ -312,14 +299,14 @@ def load_settings() -> Settings:
     js_runtime_name = os.getenv("YTDLP_JS_RUNTIME_NAME", "deno").strip() or "deno"
     if js_runtime_path is None and is_frozen() and js_runtime_name == "deno":
         # Packaged app. A Deno bundled next to the core wins (custom builds can still ship one);
-        # otherwise the desktop app's own executable is the runtime. It is Electron, which contains
-        # Node: with ELECTRON_RUN_AS_NODE=1 it behaves like `node` and yt-dlp accepts it as one.
+        # otherwise the QuickJS that ships with the app (qjs, about 1 MB) is the runtime. yt-dlp
+        # supports it natively, and it is what keeps the installer small: Deno alone is 93 MB.
         bundled_deno = bundled_tool_path("deno")
+        bundled_qjs = bundled_tool_path("qjs")
         if bundled_deno is not None:
             js_runtime_path = str(bundled_deno)
-        elif (host_exe := _host_js_runtime()) is not None:
-            js_runtime_path, js_runtime_name = host_exe, "node"
-            os.environ["ELECTRON_RUN_AS_NODE"] = "1"  # inherited by the runtime yt-dlp starts
+        elif bundled_qjs is not None:
+            js_runtime_path, js_runtime_name = str(bundled_qjs), "quickjs"
 
     cookies_raw = os.getenv("YTDLP_COOKIES_FILE", "").strip()
     cookies_path = (BASE_DIR / cookies_raw) if cookies_raw else None

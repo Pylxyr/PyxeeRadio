@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Does this ffmpeg do everything Twitch Radio asks of it?
+"""Does this ffmpeg do everything PyxeeRadio asks of it?
 
     python scripts/check_ffmpeg.py packaging/bin/ffmpeg            # or ffmpeg.exe
     python scripts/check_ffmpeg.py <ffmpeg> --https-url https://.../tone.webm

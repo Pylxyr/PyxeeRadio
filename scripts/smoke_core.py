@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Smoke test for a PyInstaller-built TwitchRadioCore.
+"""Smoke test for a PyInstaller-built PyxeeRadioCore.
 
 Catches what only breaks when frozen (missing hidden imports, data files,
 bundled-vs-installed yt-dlp). Uses a throwaway TWITCH_RADIO_HOME.
 
-  python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore.exe
+  python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore.exe
   python scripts/smoke_core.py --exe ... --resolve     # needs YouTube and GitHub reachable
 
 Exit code 0 only if every selected check passes.
@@ -49,7 +49,7 @@ def last_json(text: str) -> dict[str, object]:
     return {}
 
 
-def basic(exe: str, env: dict[str, str], bin_dir: str | None, host_js: str | None = None) -> None:
+def basic(exe: str, env: dict[str, str], bin_dir: str | None) -> None:
     done = run(exe, ["--preflight"], env)
     report = last_json(done.stdout)
     check(bool(report), "--preflight prints JSON", done.stderr[-300:])
@@ -69,16 +69,15 @@ def basic(exe: str, env: dict[str, str], bin_dir: str | None, host_js: str | Non
             str(report.get("ffmpeg")),
         )
         stale = [p.name for p in Path(bin_dir).glob("deno*")]
-        check(not stale, "no JavaScript runtime is bundled (the app brings its own)", str(stale))
-    if host_js:
-        # What the desktop app does: hand over its own executable as the JS runtime for yt-dlp.
+        check(not stale, "no Deno is bundled (it alone is 93 MB; QuickJS is the runtime)", str(stale))
+        # The QuickJS that ships with the app is yt-dlp's JavaScript runtime in the frozen core.
         runtime = report.get("js_runtime") or {}
         got = str(runtime.get("path") or "")  # type: ignore[attr-defined]
         check(
-            runtime.get("name") == "node"  # type: ignore[attr-defined]
+            runtime.get("name") == "quickjs"  # type: ignore[attr-defined]
             and bool(got)
-            and Path(got).resolve() == Path(host_js).resolve(),
-            "frozen core uses the host app as its JavaScript runtime",
+            and Path(got).resolve().parent == Path(bin_dir).resolve(),
+            "frozen core uses the bundled QuickJS as its JavaScript runtime",
             str(runtime),
         )
 
@@ -146,12 +145,7 @@ def main() -> int:
     parser.add_argument("--home", help="data folder to use (default: a temp folder)")
     parser.add_argument(
         "--bin",
-        help="folder with the bundled ffmpeg (packaging/bin); the desktop app passes it as TWITCH_RADIO_BIN",
-    )
-    parser.add_argument(
-        "--host-js",
-        help="a Node-compatible executable to act as the desktop app, which the app passes as"
-        " TWITCH_RADIO_HOST_JS_EXE (CI uses the runner's own node)",
+        help="folder with the bundled ffmpeg and qjs (packaging/bin); the desktop app passes it as TWITCH_RADIO_BIN",
     )
     args = parser.parse_args()
     exe = str(Path(args.exe).resolve())
@@ -167,13 +161,11 @@ def main() -> int:
     }
     if args.bin:
         env["TWITCH_RADIO_BIN"] = str(Path(args.bin).resolve())
-    if args.host_js:
-        env["TWITCH_RADIO_HOST_JS_EXE"] = str(Path(args.host_js).resolve())
     for name in ("YTDLP_PLAYER_CLIENT", "YTDLP_JS_RUNTIME_PATH", "TWITCH_RADIO_NO_YTDLP_OVERRIDE"):
         env.pop(name, None)
     print(f"exe: {exe}\nhome: {home}")
     if not args.resolve_only:
-        basic(exe, env, args.bin, args.host_js)
+        basic(exe, env, args.bin)
     if args.resolve or args.resolve_only:
         resolve(exe, env, home, args.url)
     print("\nFAILED: " + "; ".join(failures) if failures else "\nall checks passed")

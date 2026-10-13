@@ -91,15 +91,12 @@ def build_report() -> dict[str, Any]:
         ffmpeg = shutil.which("ffmpeg")
         js = shutil.which(js_path) if js_path else shutil.which(js_name)
         report["ffmpeg"] = {"path": ffmpeg, "version": _first_line([ffmpeg, "-version"]) if ffmpeg else None}
-        # The desktop app's executable doubles as Node (with ELECTRON_RUN_AS_NODE=1), but asking it
-        # for a version would start a whole Electron process (about 100 MB and a third of a CPU-second)
-        # just to print a number nobody needs, so it is never probed.
-        is_host = bool(js) and js == os.getenv("TWITCH_RADIO_HOST_JS_EXE")
-        probe_ok = bool(js) and not is_host
         report["js_runtime"] = {
             "name": js_name,
             "path": js,
-            "version": _first_line([js, "--version"]) if js and probe_ok else None,
+            "version": _first_line([js, "--version"])
+            if js and js_name != "quickjs"
+            else None,  # qjs has no --version
         }
 
         bot_id = settings.bot_id if settings else os.getenv("TWITCH_BOT_ID", "").strip() or None

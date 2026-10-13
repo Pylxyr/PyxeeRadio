@@ -6,5 +6,21 @@
     "opus_version": "1.6.1",
     "opus_url": "https://github.com/xiph/opus/archive/refs/tags/v1.6.1.tar.gz",
     "opus_sha256": "bf0b97ec7a65890b8db90ef94c4d6c18de12584c3085031953a10986f5917745"
+  },
+  "quickjs": {
+    "version": "0.17.0",
+    "note": "QuickJS-ng, yt-dlp's JavaScript runtime in the installed app (about 2 MB; Deno is 93 MB). Release binaries from github.com/quickjs-ng/quickjs.",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-linux-x86_64",
+        "sha256": "0bfc02511a9f549c28b53880d988fc7cd5d361e90c5e8afdfcd7dc6774ceace5",
+        "file": "qjs"
+      },
+      "windows": {
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-windows-x86_64.exe",
+        "sha256": "2aeabf0092c3262d6b2609824418f7dd7ed1f1df939f73b2b15645230cac0d77",
+        "file": "qjs.exe"
+      }
+    }
   }
 }

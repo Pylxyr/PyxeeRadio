@@ -1,16 +1,22 @@
-# Building the Twitch Radio desktop app (Windows and Linux)
+# Building the PyxeeRadio desktop app (Windows and Linux)
 
-The installer is made in four automatic steps: Python environment, ffmpeg download,
-the bot core (PyInstaller), and the desktop app (Electron + electron-builder).
+The installer is made in five automatic steps: Python environment, ffmpeg and QuickJS, the bot core
+(PyInstaller), the page checks, and the desktop app (Tauri: a Rust shell around a Svelte page).
 This page is written for Windows; [Linux](#linux-arch--cachyos) has its own section below.
+
+The desktop app uses the web engine the system already has (WebView2 on Windows, which Windows 10 and 11
+include, and WebKitGTK on Linux) instead of shipping its own copy of Chromium, so it installs small and
+idles with little memory. The page lives in `app/src` (Svelte + TypeScript), the shell in `app/src-tauri`
+(Rust).
 
 ## Prerequisites (build machine only)
 
 | Tool | Version | Get it |
 |---|---|---|
 | Python | 3.11 or newer, 64-bit, "Add python.exe to PATH" ticked | https://www.python.org/downloads/ |
-| Node.js | 22 LTS or newer (includes npm; Electron 42 needs 22.12+) | https://nodejs.org |
-| Internet | for pip, npm and ffmpeg downloads | |
+| Node.js | 22.12 or newer (includes npm) | https://nodejs.org |
+| Rust | stable, 1.90 or newer, with the Visual Studio C++ Build Tools | https://rustup.rs |
+| Internet | for pip, npm, cargo, ffmpeg and QuickJS downloads | |
 
 Users of the finished installer need **nothing** installed.
 
@@ -24,11 +30,13 @@ Users of the finished installer need **nothing** installed.
    ```
 
 3. Wait (the first build takes several minutes and downloads a few hundred MB).
-4. The installer appears at `dist\app\Twitch Radio Setup <version>.exe`. An unpacked copy you can
-   run without installing is produced by `cd gui && npm run dist:dir` (`dist\app\win-unpacked\`).
+4. The installer appears at `app\src-tauri\target\release\bundle\nsis\PyxeeRadio_<version>_x64-setup.exe`.
+   (The release workflow publishes it as `PyxeeRadio Setup <version>.exe`.) The program itself, without an
+   installer, is `app\src-tauri\target\release\PyxeeRadio.exe`; it needs `core\` and `bin\` next to it.
 
 If a step fails the script stops and says which one. Re-running resumes quickly: the Python
-environment, downloaded tools (`packaging\.cache`) and `gui\node_modules` are reused.
+environment, downloaded tools (`packaging\.cache`), `app\node_modules` and the compiled Rust crates
+(`app\src-tauri\target`) are reused. The first Rust build compiles a few hundred crates and takes several minutes.
 
 ## Try it before building
 
@@ -39,13 +47,14 @@ run-gui.bat        (starts the desktop app against your source checkout)
 
 In this mode the app uses your existing `.env` and `data\` folder in the project directory.
 Source installs need a JavaScript runtime for YouTube (the installed app brings its own, see
-"YouTube JS solver" below): put `deno` (2.3 or newer) on PATH, or set `YTDLP_JS_RUNTIME_PATH` in `.env`.
+"YouTube JS solver" below): put `deno` (2.3 or newer) or `qjs` (QuickJS-ng, `python scripts/fetch_qjs.py
+windows` puts one in `packaging\bin`) on PATH, or set `YTDLP_JS_RUNTIME_PATH` in `.env`.
 
 ## What ends up where (installed app)
 
 | Item | Location |
 |---|---|
-| Program | `%LOCALAPPDATA%\Programs\Twitch Radio\` |
+| Program | `%LOCALAPPDATA%\Programs\PyxeeRadio\` |
 | Your settings, tokens, queue | `%APPDATA%\TwitchRadio\` (`.env`, `data\`, `logs\`) - kept on uninstall unless you tick the box the uninstaller offers (default: keep) |
 | App window preferences | `%APPDATA%\TwitchRadio\gui\` |
 | Updated yt-dlp (if you installed one) | `%APPDATA%\TwitchRadio\yt-dlp\` (`current\`, `previous\`, `state.json`) |
@@ -57,7 +66,7 @@ To move an existing install: copy your old `.env` and `data\` folder into `%APPD
 
 ### ffmpeg
 
-The installer and AppImage do not ship a downloaded ffmpeg. They ship a small one (under 10 MB, against
+The installer and tarball do not ship a downloaded ffmpeg. They ship a small one (under 10 MB, against
 80 to 105 MB for the general-purpose builds) that `packaging/ffmpeg/build.sh` compiles from the FFmpeg and
 libopus source tarballs pinned, with SHA-256, in `packaging/tools.lock.json`. It contains only what the app
 uses (decode what YouTube serves, encode Opus in Ogg; songs are not otherwise processed), and it is LGPL,
@@ -90,20 +99,27 @@ ruff check .
 mypy twitch_radio bot.py
 pytest -q
 
-cd gui
+cd app
 npm ci
-npm run lint
-npm run check          # node --check on every GUI file
-npm test               # node:test unit tests (update-check logic)
-npm run check:build    # validates the electron-builder config and the files it references
+npm run check          # svelte-check: types and Svelte warnings
+npm test               # vitest: logic, theme contrast of every colour style, and the components mounted in jsdom
+npm run build          # the production page (app/dist), which the shell compiles into itself
+
+cd src-tauri
+cargo test             # the shell: validation, preferences, update check, log formatting
+cargo clippy --all-targets -- -D warnings
 ```
+
+On Linux the shell links against the system WebKitGTK; install its development files first (the list is
+in the Linux section below). `npx tauri dev` (or `run-gui.bat`) starts the app against your source checkout
+with hot reload for the page.
 
 After a core build, smoke-test the frozen exe (catches hidden-import and data-file problems that
 only appear when frozen):
 
 ```
-python scripts\smoke_core.py --exe dist\core\TwitchRadioCore\TwitchRadioCore.exe --bin packaging\bin
-python scripts\smoke_core.py --exe dist\core\TwitchRadioCore\TwitchRadioCore.exe --bin packaging\bin --resolve-only
+python scripts\smoke_core.py --exe dist\core\PyxeeRadioCore\PyxeeRadioCore.exe --bin packaging\bin
+python scripts\smoke_core.py --exe dist\core\PyxeeRadioCore\PyxeeRadioCore.exe --bin packaging\bin --resolve-only
 ```
 
 The second command resolves a real YouTube video and needs YouTube and GitHub reachable.
@@ -112,40 +128,44 @@ The second command resolves a real YouTube video and needs YouTube and GitHub re
 
 ## Linux (Arch / CachyOS)
 
-Releases include `Twitch-Radio-x.y.z-linux-x64.AppImage` and a `.tar.gz` of the unpacked app
-(x86-64). ffmpeg (a static build) is bundled.
+Releases include `PyxeeRadio-x.y.z-linux-x64.tar.gz` (x86-64): the app, the bot core, ffmpeg and QuickJS in
+one folder. There is no installer and no bundled web engine; the app uses the system's WebKitGTK.
 
 **Run a release build**
 
 ```
-chmod +x Twitch-Radio-*-linux-x64.AppImage
-./Twitch-Radio-*-linux-x64.AppImage
+sudo pacman -S webkit2gtk-4.1 libayatana-appindicator     # once; Debian/Ubuntu: libwebkit2gtk-4.1-0 libayatana-appindicator3-1
+tar xzf PyxeeRadio-*-linux-x64.tar.gz
+./PyxeeRadio-*-linux-x64/PyxeeRadio
 ```
 
-The AppImage needs FUSE 2: `sudo pacman -S fuse2`. Without it, unpack the `.tar.gz` and run
-`./twitch-radio` inside, or run the AppImage with `--appimage-extract-and-run`. Settings, tokens and
-data live in `~/.config/TwitchRadio` (the Windows `%APPDATA%\TwitchRadio` equivalent). Electron's
-sandbox needs unprivileged user namespaces, which Arch and CachyOS enable by default.
+Settings, tokens and data live in `~/.config/TwitchRadio` (the Windows `%APPDATA%\TwitchRadio` equivalent).
+Delete the folder to remove the app. The tray icon needs `libayatana-appindicator` and a desktop that shows
+status icons (KDE, or GNOME with the AppIndicator extension); without one the app still runs, you just
+cannot reach it again after closing the window to the tray, so turn off "hide to tray" there.
+
+**Why not an AppImage?** An AppImage has to carry WebKitGTK itself (about 70 MB more), which is the weight
+this app was moved off Electron to avoid. `npx tauri build --bundles appimage` still makes one if you want it.
 
 **Build it yourself**
 
 ```
-sudo pacman -S python nodejs npm curl
+sudo pacman -S python nodejs npm rustup curl base-devel nasm cmake openssl webkit2gtk-4.1 libayatana-appindicator librsvg
+rustup default stable
 scripts/build-linux.sh
 ```
 
-This runs the same four steps as `build-windows.bat` and leaves the AppImage and tarball in
-`dist/app/`. Step 2 builds the small ffmpeg described above from pinned source (and skips it when
-`packaging/bin/ffmpeg` already exists). It links OpenSSL and libopus statically and needs only glibc,
-libm and the kernel, so it runs wherever the bot's frozen core does.
+This runs the same five steps as `build-windows.bat` and leaves the tarball in `dist/app/`. Step 2 builds the
+small ffmpeg described above from pinned source (and skips it when `packaging/bin/ffmpeg` already exists), and
+downloads the pinned QuickJS. ffmpeg links OpenSSL and libopus statically and needs only glibc, libm and the
+kernel, so it runs wherever the bot's frozen core does.
 
-**Not supported on Linux:** "Open Twitch Radio when I sign in" (Electron cannot set login items
-there; the toggle is hidden). Use your desktop's autostart instead. Install and update from the app
-only shows a link to the AppImage; nothing is installed for you. Only x86-64 is built.
+"Open PyxeeRadio when I sign in" works on Linux too (it writes an autostart entry). Install and update from the
+app only shows a link to the download; nothing is installed for you. Only x86-64 is built.
 
-**Source install on Linux** (no packaging): `sudo pacman -S python nodejs npm ffmpeg deno`, then
-`python -m venv .venv && .venv/bin/pip install -r requirements.txt` and, for the desktop shell,
-`cd gui && npm ci && npm start`. The bot uses `ffmpeg` and `deno` from PATH.
+**Source install on Linux** (no packaging): `sudo pacman -S python nodejs npm ffmpeg deno rustup webkit2gtk-4.1`,
+then `python -m venv .venv && .venv/bin/pip install -r requirements.txt` and, for the desktop shell,
+`cd app && npm ci && npx tauri dev`. The bot uses `ffmpeg` and `deno` from PATH.
 
 ## Cutting a release
 
@@ -155,9 +175,9 @@ The workflow then, with no further steps from you:
 
 1. works out the next version from the current one (the very first release uses the version already
    in the files, so a repo at 1.0.0 with no tags releases 1.0.0),
-2. commits the bump to `main` and tags it (`bump-version.py` sets `gui/package.json`,
-   `gui/package-lock.json` and `twitch_radio/version.py`),
-3. builds the Windows installer and the Linux AppImage and tarball, and publishes the GitHub release
+2. commits the bump to `main` and tags it (`bump-version.py` sets `app/package.json`, `app/package-lock.json`,
+   `app/src-tauri/Cargo.toml`, `Cargo.lock`, `tauri.conf.json` and `twitch_radio/version.py`),
+3. builds the Windows installer and the Linux tarball, and publishes the GitHub release
    by calling **release.yml**.
 
 A version with a `-` suffix (`1.2.0-rc1`) is published as a pre-release. If the build fails after the
@@ -181,16 +201,17 @@ version: it builds everything and uploads the files as a workflow artifact witho
 
 * **ci.yml** runs on pushes and pull requests to `main`; a newer push cancels the older run.
   * `python`: Python 3.11 and 3.12 - `ruff check`, `mypy`, `pytest`.
-  * `electron`: Node 22 on Windows - `npm ci`, lint, syntax check, unit tests, build-config check.
-  * `windows-build-smoke`: only on pull requests that touch `twitch_radio/`, `packaging/`, `gui/` or
+  * `app`: the page (`npm ci`, type check, tests, build) and the shell (`cargo test`, `cargo clippy -D warnings`).
+  * `windows-build-smoke`: only on pull requests that touch `twitch_radio/`, `packaging/`, `app/` or
     `requirements*`. Builds the core with PyInstaller and runs `scripts/smoke_core.py`. The last
     step (real YouTube resolve, needs the network) may fail without failing the PR.
 * **cut-release.yml** is the one-click release button (see "Cutting a release"). It bumps, commits
   and tags on `main`, then calls release.yml, because a tag pushed with the built-in token does not
   start other workflows by itself.
 * **release.yml** runs on `v*.*.*` tags, and when called by cut-release.yml. It first checks that the tag equals the version in
-  `gui/package.json`, `gui/package-lock.json` and `twitch_radio/version.py`, then builds on
-  Windows (pinned tools, PyInstaller core, smoke tests, then the NSIS installer; the real YouTube
+  `app/package.json`, `app/package-lock.json`, the Rust crate and `tauri.conf.json` and `twitch_radio/version.py`, then builds on
+  Windows (pinned tools, PyInstaller core, smoke tests, then the NSIS installer, which it installs silently and
+  smoke-tests from where it landed; the real YouTube
   resolve is best effort here because YouTube often blocks GitHub's runners, so a failure is a
   warning in the run, not a stopped release), writes `SHA256SUMS.txt`, and publishes a GitHub
   release with the installer, `SHA256SUMS.txt` and `THIRD_PARTY_NOTICES.txt`.
@@ -203,23 +224,27 @@ version: it builds everything and uploads the files as a workflow artifact witho
   `.github/release-notes-header.md`. A stable release is compared with the previous stable release,
   not with a release candidate.
 * Third-party actions are pinned to full commit SHAs with the version in a comment.
-  `.github/dependabot.yml` opens weekly pull requests for GitHub Actions, pip and npm, which is how
+  `.github/dependabot.yml` opens weekly pull requests for GitHub Actions, pip, npm and cargo, which is how
   they stay fresh. Review those PRs (Dependabot updates the SHA and the comment together).
 
 Code signing is optional: set the repository secrets `WIN_CSC_LINK` (a base64 `.pfx`, or a URL) and
-`WIN_CSC_KEY_PASSWORD`. Without them the installer is built unsigned and the release notes say so.
+`WIN_CSC_KEY_PASSWORD`. The workflow imports the certificate into the runner's store and Tauri's bundler signs
+the app and the installer by thumbprint (`scripts/tauri_signing_config.py` writes that config). Without the
+secrets the installer is built unsigned and the release notes say so.
 Build provenance (`actions/attest-build-provenance`) needs a public repository, or GitHub Enterprise
 Cloud for a private one; where it isn't available the step is skipped without failing the release.
 
 ## How the update mechanisms behave
 
 **YouTube JS solver.** yt-dlp needs a JavaScript runtime and "solver" scripts to read some YouTube
-links. The installed app ships no separate runtime (that was a 93 MB Deno, about 29 MB inside the
-installer): the desktop app's own executable is Electron, which contains Node, and the core starts it
-with `ELECTRON_RUN_AS_NODE=1` as yt-dlp's "node" runtime (`twitch_radio/config.py`; `gui/main.js`
-passes the path as `TWITCH_RADIO_HOST_JS_EXE`). CI proves the built app can do this
-(`scripts/check_host_runtime.py`); if you ever turn off Electron's `runAsNode` fuse, that check fails
-the release. A Deno placed in `bin\` or set via `YTDLP_JS_RUNTIME_PATH` still takes precedence. The `yt-dlp-ejs` pip package is deliberately **not** bundled. yt-dlp is
+links. The installed app ships **QuickJS-ng** (`bin\qjs.exe`, about 2 MB) as that runtime, and the core
+selects it automatically in the packaged app (`twitch_radio/config.py`). It is downloaded by
+`scripts/fetch_qjs.py` from the pinned release in `packaging/tools.lock.json` and checked against its SHA-256.
+Deno would be 93 MB, and the Electron-era trick of running the app's own executable as Node is gone along
+with Electron. QuickJS is slower than Node or Deno at solving the player's challenge (seconds, not
+milliseconds), and the core already tries a quick attempt first and falls back when it is too slow. A Deno
+placed in `bin\` or set via `YTDLP_JS_RUNTIME_PATH` still takes precedence, and `YTDLP_JS_RUNTIME_NAME`
+can select `node` or `bun` for a source install. The `yt-dlp-ejs` pip package is deliberately **not** bundled. yt-dlp is
 started with `remote_components: ["ejs:github"]`, downloads the scripts that match its own version
 from github.com/yt-dlp/ejs over HTTPS the first time it needs them, and caches them in
 `data\yt-dlp-cache`, so they survive restarts. If the download is blocked, the Logs tab shows an
@@ -243,7 +268,7 @@ Limit: the checksum file comes from the same release, so it detects corruption a
 transit, not a compromised release (yt-dlp's GPG signature is not checked).
 
 **App updates.** Settings > App > "Check for app updates" asks the GitHub Releases API for the
-latest release of `Pylxyr/Twitch-Radio` (constant `UPDATE_REPO` in `gui/updates.js`), compares it
+latest release of `Pylxyr/Twitch-Radio` (constant `UPDATE_REPO` in `app/src-tauri/src/updates.rs`), compares it
 with the running version and shows a download link, opened through the app's safe external-link
 handler. Nothing is installed automatically. Automatic checks run at most once a day and can be
 turned off in the same card.
@@ -253,7 +278,7 @@ turned off in the same card.
 * **Antivirus / SmartScreen.** An unsigned installer shows "Windows protected your PC" and
   PyInstaller executables are sometimes flagged by antivirus. Both are normal for unsigned apps; a
   code-signing certificate fixes SmartScreen. Add the install folder to your antivirus exclusions if
-  it quarantines `TwitchRadioCore.exe`.
+  it quarantines `PyxeeRadioCore.exe`.
 * **ffmpeg licence.** The shipped ffmpeg is an LGPL build (v2.1 on Windows, v3 on Linux), with no GPL
   or non-free parts. If you distribute the installer, keep `bin\FFMPEG-LICENSE.txt` and
   `THIRD_PARTY_NOTICES.txt` in it, and keep `packaging/ffmpeg/build.sh` and the lock file public: they

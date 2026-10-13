@@ -1,7 +1,7 @@
-# PyInstaller spec for the bot core ("TwitchRadioCore").
+# PyInstaller spec for the bot core ("PyxeeRadioCore").
 # Build from the project root:
 #   pyinstaller packaging/core.spec --noconfirm --distpath dist/core --workpath build/pyinstaller
-# Result: dist/core/TwitchRadioCore/TwitchRadioCore.exe (one-folder build; a
+# Result: dist/core/PyxeeRadioCore/PyxeeRadioCore.exe (one-folder build; a
 # one-file build would unpack ~150 MB to %TEMP% on every start and again for
 # every yt-dlp worker process).
 import os
@@ -69,9 +69,9 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TwitchRadioCore",
+    name="PyxeeRadioCore",
     console=True,  # stdin/stdout carry the control protocol; the app starts it hidden
     upx=False,
     icon=os.path.join(ROOT, "gui", "build", "icon.ico"),
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="TwitchRadioCore", upx=False)
+coll = COLLECT(exe, a.binaries, a.datas, name="PyxeeRadioCore", upx=False)

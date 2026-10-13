@@ -153,7 +153,7 @@ def test_merge_file_states_nets_out_the_commits() -> None:
 def test_area_of() -> None:
     assert release_notes.area_of("twitch_radio/player.py") == "Audio playback"
     assert release_notes.area_of("twitch_radio/admin/app.py") == "Settings web page"
-    assert release_notes.area_of("gui/main.js") == "Desktop app"
+    assert release_notes.area_of("app/src-tauri/src/lib.rs") == "Desktop app"
     assert release_notes.area_of(".github/workflows/ci.yml") == "Build and release"
     assert release_notes.area_of("weird/thing.bin") == "Other"
 
@@ -161,8 +161,8 @@ def test_area_of() -> None:
 def test_render_code_changes_and_lockfiles_ignored() -> None:
     logic = release_notes.detect_logic(DIFF)
     lines = release_notes.render_code_changes(
-        {"twitch_radio/player.py": "M", "gui/package-lock.json": "M", "deploy/x.service": "D"},
-        {"twitch_radio/player.py": (5, 1), "gui/package-lock.json": (900, 900), "deploy/x.service": (0, 7)},
+        {"twitch_radio/player.py": "M", "app/package-lock.json": "M", "deploy/x.service": "D"},
+        {"twitch_radio/player.py": (5, 1), "app/package-lock.json": (900, 900), "deploy/x.service": (0, 7)},
         logic,
     )
     text = "\n".join(lines)
@@ -230,7 +230,7 @@ def test_ai_summary_accepts_good_reply_and_rejects_bad(monkeypatch: pytest.Monke
 
 def test_trim_diff_drops_lockfiles_and_caps_each_file() -> None:
     big = "diff --git a/twitch_radio/big.py b/twitch_radio/big.py\n" + ("+x\n" * 20000)
-    lock = "diff --git a/gui/package-lock.json b/gui/package-lock.json\n+huge\n"
+    lock = "diff --git a/app/package-lock.json b/app/package-lock.json\n+huge\n"
     out = release_notes._trim_diff(lock + big, 50_000)
     assert "package-lock" not in out
     assert "omitted" in out and len(out) < 4_000
@@ -267,11 +267,14 @@ def test_prompt_stays_inside_the_budget_and_puts_product_code_first() -> None:
         return f"diff --git a/{path} b/{path}\n" + "+line of change\n" * 120
 
     diff = (
-        chunk("tests/test_a.py") + chunk("BUILD.md") + chunk("twitch_radio/player.py") + chunk("gui/main.js")
+        chunk("tests/test_a.py")
+        + chunk("BUILD.md")
+        + chunk("twitch_radio/player.py")
+        + chunk("app/src-tauri/src/lib.rs")
     )
     prompt = release_notes.build_prompt("v2", "v1", [("a", "Fix crash")], "stat", diff, 5_000)
     assert len(prompt) <= 5_000
-    assert prompt.index("player.py") < prompt.index("main.js") or "main.js" in prompt
+    assert prompt.index("player.py") < prompt.index("lib.rs") or "lib.rs" in prompt
     assert "twitch_radio/player.py" in prompt
     assert (
         "not shown" in prompt and "test_a.py" in prompt.split("not shown")[1]

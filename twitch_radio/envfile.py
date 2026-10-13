@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 
 _KEY_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 _NEEDS_QUOTES = re.compile(r"[\s#\"'\\$`]")
-_APP_SECTION = "# --- Added by the Twitch Radio app ---"
+_APP_SECTION = "# --- Added by the PyxeeRadio app ---"
 
 
 def read_values(path: Path) -> dict[str, str]:

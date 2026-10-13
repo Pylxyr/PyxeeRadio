@@ -32,7 +32,13 @@ from twitch_radio.chatbot import TwitchChatBot
 from twitch_radio.config import Settings, token_status
 from twitch_radio.extraction import Resolver, UnsupportedSourceError
 from twitch_radio.lookahead import RadioLookahead
-from twitch_radio.player import SKIP_NOT_READY_MESSAGE, QueuedRequest, RadioPlayer, SkipResult
+from twitch_radio.player import (
+    SKIP_NOT_READY_MESSAGE,
+    SKIP_PAUSED_MESSAGE,
+    QueuedRequest,
+    RadioPlayer,
+    SkipResult,
+)
 from twitch_radio.radio import RadioSuggester
 from twitch_radio.store import JsonStore
 from twitch_radio.telemetry import counters
@@ -165,6 +171,8 @@ class BotRuntime:
         reply: dict[str, Any] = {"ok": result is SkipResult.SKIPPED, "result": result.value}
         if result is SkipResult.NOT_READY:
             reply["error"] = SKIP_NOT_READY_MESSAGE
+        elif result is SkipResult.PAUSED:
+            reply["error"] = SKIP_PAUSED_MESSAGE
         return reply
 
     def pause(self) -> bool:

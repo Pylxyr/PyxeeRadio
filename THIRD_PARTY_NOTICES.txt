@@ -1,10 +1,10 @@
-Twitch Radio - third-party notices
+PyxeeRadio - third-party notices
 ==================================
 
-Twitch Radio itself is released under the Unlicense (see LICENSE in the source
+PyxeeRadio itself is released under the Unlicense (see LICENSE in the source
 repository). The software below is under its own licences.
 
-Twitch Radio bundles or downloads the software below. Each project is under its
+PyxeeRadio bundles or downloads the software below. Each project is under its
 own licence; the summary here is for orientation, and the project's own licence
 text is authoritative. Where a licence requires its text to accompany the
 software, it is included in the installed app folder or at the link given.
@@ -47,11 +47,19 @@ pycryptodomex, websockets) are not part of this app.
 Desktop shell
 -------------
 
-Electron - MIT                             https://github.com/electron/electron
-Chromium and Node.js, included in Electron - see LICENSES.chromium.html in the
-    installed app folder, and https://nodejs.org/. The app also runs Electron's
-    Node.js to execute the YouTube solver scripts for yt-dlp.
-electron-builder (build tool, not shipped) - MIT
+Tauri, wry, tao and the Tauri plugins (dialog, opener, single-instance, autostart)
+    - MIT or Apache-2.0                    https://github.com/tauri-apps/tauri
+The Rust crates the shell is built from (tokio, serde, ureq, rustls and others),
+    each under its own MIT / Apache-2.0 / ISC style licence. The full list is the
+    dependency tree in app/src-tauri/Cargo.lock.
+Svelte - MIT                               https://github.com/sveltejs/svelte
+    Compiled into the page; the page has no other runtime dependencies.
+Web engine: not shipped. The app uses the one the system provides (Microsoft
+    Edge WebView2 on Windows, WebKitGTK on Linux), under those projects' licences.
+QuickJS-ng - MIT                           https://github.com/quickjs-ng/quickjs
+    Shipped as bin\qjs.exe (bin/qjs on Linux). It is the JavaScript runtime yt-dlp
+    uses to run the YouTube solver scripts.
+Vite, Vitest, svelte-check, TypeScript (build tools, not shipped) - MIT / Apache-2.0
 
 Downloaded at runtime, not shipped
 ----------------------------------
@@ -60,8 +68,8 @@ yt-dlp JS challenge solver scripts - Unlicense
     https://github.com/yt-dlp/ejs
     These are NOT part of the installer. yt-dlp downloads the scripts that match
     its own version over HTTPS the first time it needs them and keeps them in
-    the Twitch Radio data folder (%APPDATA%\TwitchRadio\data\yt-dlp-cache). They
-    run inside the Node.js that is part of Electron.
+    the PyxeeRadio data folder (%APPDATA%\TwitchRadio\data\yt-dlp-cache). They
+    run inside the bundled QuickJS runtime.
 
 yt-dlp updates - Unlicense
     If you press "Update" in Settings > App, a newer yt-dlp release is downloaded

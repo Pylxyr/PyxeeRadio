@@ -1,4 +1,4 @@
-# Twitch Radio
+# PyxeeRadio
 
 A song-request radio for your Twitch stream. Viewers type `!sr <song or YouTube link>` in chat, the
 bot queues it, and it plays through OBS together with an on-screen "now playing" overlay.
@@ -9,7 +9,7 @@ telemetry.
 
 | | |
 |---|---|
-| **Runs on** | Windows 10/11 (desktop app or from source); Linux from source or AppImage |
+| **Runs on** | Windows 10/11 (desktop app or from source); Linux from source or the portable tarball |
 | **Listens on** | `127.0.0.1` only. Nothing is reachable from your network |
 | **Connects out to** | Twitch (chat), YouTube (songs), GitHub (update checks). Details [below](#privacy-and-network-use) |
 | **Needs** | A free Twitch developer app, a second Twitch account for the bot to chat as, and OBS |
@@ -35,9 +35,9 @@ telemetry.
 ## Quick start (desktop app)
 
 1. Download the installer from the [Releases page](https://github.com/Pylxyr/Twitch-Radio/releases/latest)
-   (`Twitch Radio Setup x.y.z.exe`) and run it. Nothing else needs to be installed: ffmpeg is
+   (`PyxeeRadio Setup x.y.z.exe`) and run it. Nothing else needs to be installed: ffmpeg is
    bundled and the app brings what it needs for YouTube.
-2. Open **Twitch Radio**, go to **Settings**, and fill in the Twitch section (next chapter).
+2. Open **PyxeeRadio**, go to **Settings**, and fill in the Twitch section (next chapter).
 3. Press **Start** on the dashboard.
 
 Closing the window while the radio is running can keep it going in the system tray. The window is
@@ -134,8 +134,8 @@ Midnight, Ocean, Forest, Sunset, Rose, Graphite and AMOLED black. Every style wo
 their picture, uploader and length, and clicking one queues it. Pasting a YouTube link still adds it
 straight away. The queue (including the radio-mix lookahead) shows each song's picture.
 
-**Clear queue** asks with a second click on the same button ("Click again to clear") instead of a popup:
-on Windows, Electron's popups could leave the search bar unable to take focus.
+**Clear queue** asks with a second click on the same button ("Click again to clear") instead of a popup,
+so the search bar never loses focus to a dialog.
 
 **Songs follow the sound.** The stream reaches OBS a few seconds after it is made, so the overlay and the
 dashboard are held back by the same amount: the next song appears, and the last one leaves, when you hear
@@ -180,7 +180,7 @@ and auto-radio on/off.
 
 ## Resource use
 
-Twitch Radio is designed to cost almost nothing while you stream.
+PyxeeRadio is designed to cost almost nothing while you stream.
 
 - **Nobody listening, nothing playing:** the audio encoder is not running and the bot wakes only
   when something happens. The Python process is well under 100 MB.
@@ -217,7 +217,7 @@ For Windows, with the batch files:
 4. Fill in the four Twitch values in `.env` (see [Connect it to Twitch](#connect-it-to-twitch)).
 5. Double-click **`check-config.bat`**. It should print `Config OK:`; otherwise it names what to fix.
 6. Double-click **`run.bat`** to start the bot in a console, or **`run-gui.bat`** for the desktop app
-   (needs Node.js 22 or newer). Stop with **Ctrl+C** and wait for the console to finish before
+   (needs Node.js 22 or newer and Rust, see [BUILD.md](BUILD.md)). Stop with **Ctrl+C** and wait for the console to finish before
    closing it.
 
 On Linux or macOS, the same steps apply by hand: `python3 -m venv .venv`, `pip install -r
@@ -235,6 +235,10 @@ To build the installer yourself, see [BUILD.md](BUILD.md).
 | Tokens, queue, limits, radio lookahead, yt-dlp cache | `%APPDATA%\TwitchRadio\data\` | `data\` in the project folder |
 | Logs | `%APPDATA%\TwitchRadio\logs\` | `logs\` in the project folder |
 | Window preferences | `%APPDATA%\TwitchRadio\gui\` | same |
+
+PyxeeRadio used to be called Twitch Radio. The settings folder keeps its old name, `TwitchRadio`, on
+purpose: an existing install finds its `.env`, tokens and queue exactly where it left them, and the
+update check still recognizes releases published under either name.
 
 Settings > This app has buttons that open the data and log folders and show the `.env` file. Uninstalling the app leaves them in place by default, so a reinstall keeps your setup; the
 uninstaller asks whether to delete them too (default: no). The Twitch tokens in
@@ -286,7 +290,8 @@ ruff format --check .
 mypy twitch_radio bot.py
 pytest -q
 
-cd gui && npm ci && npm run lint && npm run check && npm test && npm run check:build
+cd app && npm ci && npm run check && npm test
+cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
 The player tests run the real pipeline against a local HTTP server and need `ffmpeg` on `PATH`

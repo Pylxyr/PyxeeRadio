@@ -433,22 +433,23 @@ def test_garbage_in_the_file_falls_back_to_defaults(raw: dict[str, Any]) -> None
 
 
 def test_the_desktop_app_and_the_core_agree_on_the_limits() -> None:
-    """gui/validate.js and twitch_radio/lookahead.py each clamp the setting; they must use the same numbers."""
+    """The desktop app (validate.rs) and twitch_radio/lookahead.py each clamp the setting; they must use the same numbers."""
     import re
 
     from twitch_radio.lookahead import LOOKAHEAD_DEFAULT, LOOKAHEAD_DEFAULT_ENABLED
 
-    source = (Path(__file__).resolve().parent.parent / "gui" / "validate.js").read_text(encoding="utf-8")
+    path = Path(__file__).resolve().parent.parent / "app" / "src-tauri" / "src" / "validate.rs"
+    source = path.read_text(encoding="utf-8")
 
-    def js_constant(name: str) -> str:
-        match = re.search(rf"const {name} = (\w+);", source)
-        assert match, f"{name} not found in gui/validate.js"
+    def rust_constant(name: str) -> str:
+        match = re.search(rf"pub const {name}: \w+ = (\w+);", source)
+        assert match, f"{name} not found in app/src-tauri/src/validate.rs"
         return match.group(1)
 
-    assert int(js_constant("LOOKAHEAD_MIN")) == LOOKAHEAD_MIN
-    assert int(js_constant("LOOKAHEAD_MAX")) == LOOKAHEAD_MAX
-    assert int(js_constant("LOOKAHEAD_DEFAULT")) == LOOKAHEAD_DEFAULT
-    assert (js_constant("LOOKAHEAD_DEFAULT_ENABLED") == "true") == LOOKAHEAD_DEFAULT_ENABLED
+    assert int(rust_constant("LOOKAHEAD_MIN")) == LOOKAHEAD_MIN
+    assert int(rust_constant("LOOKAHEAD_MAX")) == LOOKAHEAD_MAX
+    assert int(rust_constant("LOOKAHEAD_DEFAULT")) == LOOKAHEAD_DEFAULT
+    assert (rust_constant("LOOKAHEAD_DEFAULT_ENABLED") == "true") == LOOKAHEAD_DEFAULT_ENABLED
 
 
 def test_a_big_lookahead_asks_youtube_for_enough_of_the_mix() -> None:

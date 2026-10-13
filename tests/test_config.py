@@ -105,12 +105,9 @@ def test_explicit_js_runtime_path_wins(monkeypatch: pytest.MonkeyPatch, settings
 def test_packaged_app_prefers_a_bundled_deno_when_one_ships(
     monkeypatch: pytest.MonkeyPatch, settings: config.Settings, tmp_path: Path
 ) -> None:
-    deno = tmp_path / "deno"
-    host = tmp_path / "Twitch Radio.exe"
-    host.write_text("")
+    deno, qjs = tmp_path / "deno", tmp_path / "qjs"
     monkeypatch.setattr(config, "is_frozen", lambda: True)
-    monkeypatch.setattr(config, "bundled_tool_path", lambda name: deno if name == "deno" else None)
-    monkeypatch.setenv(config.HOST_JS_ENV, str(host))
+    monkeypatch.setattr(config, "bundled_tool_path", lambda name: {"deno": deno, "qjs": qjs}.get(name))
     loaded = config.load_settings()
     assert loaded.ytdlp_js_runtime_path == str(deno)
     options = Resolver(loaded)._build_options()
@@ -119,39 +116,29 @@ def test_packaged_app_prefers_a_bundled_deno_when_one_ships(
     assert config.load_settings().ytdlp_js_runtime_path is None
 
 
-def test_packaged_app_without_deno_uses_the_desktop_app_as_node(
+def test_packaged_app_without_deno_uses_the_bundled_quickjs(
     monkeypatch: pytest.MonkeyPatch, settings: config.Settings, tmp_path: Path
 ) -> None:
-    host = tmp_path / "Twitch Radio.exe"
-    host.write_text("")
-    monkeypatch.delenv("ELECTRON_RUN_AS_NODE", raising=False)  # so monkeypatch restores it afterwards
+    qjs = tmp_path / "qjs"
     monkeypatch.setattr(config, "is_frozen", lambda: True)
-    monkeypatch.setattr(config, "bundled_tool_path", lambda name: None)
-    monkeypatch.setenv(config.HOST_JS_ENV, str(host))
+    monkeypatch.setattr(config, "bundled_tool_path", lambda name: qjs if name == "qjs" else None)
     loaded = config.load_settings()
-    assert (loaded.ytdlp_js_runtime_name, loaded.ytdlp_js_runtime_path) == ("node", str(host))
-    assert os.environ["ELECTRON_RUN_AS_NODE"] == "1"
-    assert Resolver(loaded)._build_options()["js_runtimes"] == {"node": {"path": str(host)}}
+    assert (loaded.ytdlp_js_runtime_name, loaded.ytdlp_js_runtime_path) == ("quickjs", str(qjs))
+    assert Resolver(loaded)._build_options()["js_runtimes"] == {"quickjs": {"path": str(qjs)}}
 
 
-def test_desktop_app_is_not_used_as_node_when_it_should_not_be(
+def test_the_bundled_runtime_is_only_for_the_packaged_app_and_never_overrides_a_choice(
     monkeypatch: pytest.MonkeyPatch, settings: config.Settings, tmp_path: Path
 ) -> None:
-    host = tmp_path / "Twitch Radio.exe"
-    host.write_text("")
-    monkeypatch.delenv("ELECTRON_RUN_AS_NODE", raising=False)
-    monkeypatch.setattr(config, "bundled_tool_path", lambda name: None)
-    monkeypatch.setenv(config.HOST_JS_ENV, str(host))
-    # a source install ignores it, even if the variable leaked into the environment
-    monkeypatch.setattr(config, "is_frozen", lambda: False)
+    qjs = tmp_path / "qjs"
+    monkeypatch.setattr(config, "bundled_tool_path", lambda name: qjs if name == "qjs" else None)
+    monkeypatch.setattr(config, "is_frozen", lambda: False)  # a source install uses whatever is on PATH
     assert config.load_settings().ytdlp_js_runtime_path is None
     monkeypatch.setattr(config, "is_frozen", lambda: True)
-    # a path that does not exist is ignored rather than trusted
-    monkeypatch.setenv(config.HOST_JS_ENV, str(tmp_path / "missing.exe"))
+    monkeypatch.setattr(config, "bundled_tool_path", lambda name: None)  # nothing shipped: nothing forced
     assert config.load_settings().ytdlp_js_runtime_path is None
-    # an explicit choice of runtime or path is never overridden
-    monkeypatch.setenv(config.HOST_JS_ENV, str(host))
-    monkeypatch.setenv("YTDLP_JS_RUNTIME_PATH", "/opt/deno")
+    monkeypatch.setattr(config, "bundled_tool_path", lambda name: qjs if name == "qjs" else None)
+    monkeypatch.setenv("YTDLP_JS_RUNTIME_PATH", "/opt/deno")  # an explicit path always wins
     assert config.load_settings().ytdlp_js_runtime_path == "/opt/deno"
     monkeypatch.delenv("YTDLP_JS_RUNTIME_PATH")
     monkeypatch.setenv("YTDLP_JS_RUNTIME_NAME", "bun")

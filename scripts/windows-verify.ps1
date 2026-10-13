@@ -24,7 +24,7 @@
 
     powershell -ExecutionPolicy Bypass -File scripts\windows-verify.ps1
     powershell -ExecutionPolicy Bypass -File scripts\windows-verify.ps1 -YoutubeUrl https://www.youtube.com/watch?v=jNQXAC9IVRw
-    powershell -ExecutionPolicy Bypass -File scripts\windows-verify.ps1 -Installer "dist\app\Twitch Radio Setup 1.0.2.exe"
+    powershell -ExecutionPolicy Bypass -File scripts\windows-verify.ps1 -Installer "dist\app\PyxeeRadio Setup 1.0.2.exe"
 
   The report is also saved to windows-verify-report.txt in the folder you ran it from.
 
@@ -35,7 +35,7 @@
   A YouTube video to resolve and decode (needs internet; Node.js on PATH helps yt-dlp).
 
 .PARAMETER Installer
-  Path to "Twitch Radio Setup x.y.z.exe". Enables step 4.
+  Path to "PyxeeRadio Setup x.y.z.exe". Enables step 4.
 #>
 param(
   [string]$Ffmpeg = "packaging\bin\ffmpeg.exe",
@@ -159,7 +159,7 @@ Say "a) Run the installer normally. Does the wizard show the licence/notices pag
 Say "b) Uninstall from Settings > Apps. Does the dialog ask whether to also delete settings and Twitch tokens, with No as the default button? Try Yes once on a test install: is %APPDATA%\TwitchRadio gone afterwards?"
 Say "c) Start the app, sign in, request a song with !sr from your channel, listen through OBS for a full song. Any stutter, silence or error in the app's log?"
 Say "d) !sq (and !songqueue), !skip as the requester, !skip as a different viewer (should be refused), !radio, !radio off as you (broadcaster) and as a mod (mod should be refused)."
-Say "e) Task Manager while a song plays: CPU and memory of ffmpeg.exe, TwitchRadioCore.exe and the app (rough numbers are fine)."
+Say "e) Task Manager while a song plays: CPU and memory of ffmpeg.exe, PyxeeRadioCore.exe and the app (rough numbers are fine)."
 
 Section "Done"
 Say ("Report saved to: " + $report)

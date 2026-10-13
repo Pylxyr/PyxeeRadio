@@ -15,7 +15,7 @@ from twitchio import Chatter
 from twitchio.ext import commands
 
 from twitch_radio.components.song_requests import SongRequestComponent
-from twitch_radio.player import SKIP_NOT_READY_MESSAGE, SkipResult
+from twitch_radio.player import SKIP_NOT_READY_MESSAGE, SKIP_PAUSED_MESSAGE, SkipResult
 from twitch_radio.store import JsonStore
 from twitch_radio.toggles import FeatureToggles
 
@@ -110,6 +110,16 @@ def test_skip_with_nothing_playing(tmp_path: Path) -> None:
         await component.skip.callback(component, _ctx(_chatter(100)))
         bot.player.skip.assert_not_awaited()
         assert "Nothing's playing" in _reply_text(bot)
+
+    run(go())
+
+
+def test_skip_while_paused_says_playback_is_paused(tmp_path: Path) -> None:
+    async def go() -> None:
+        component, bot = _make(tmp_path, active_requester_id=100)
+        bot.player.skip.return_value = SkipResult.PAUSED
+        await component.skip.callback(component, _ctx(_chatter(100)))
+        assert _reply_text(bot) == SKIP_PAUSED_MESSAGE
 
     run(go())
 

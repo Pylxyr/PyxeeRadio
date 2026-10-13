@@ -86,7 +86,7 @@ AREAS: tuple[tuple[str, str], ...] = (
     (r"^twitch_radio/admin/", "Settings web page"),
     (r"^twitch_radio/(config|tunables|toggles|envfile)\.py$", "Settings and configuration"),
     (r"^twitch_radio/", "Bot core"),
-    (r"^gui/", "Desktop app"),
+    (r"^(app|gui)/", "Desktop app"),
     (
         r"^(\.github/|scripts/|packaging/|\.env\.example|build-|BUILD\.md|requirements|pyproject\.toml)",
         "Build and release",

@@ -76,7 +76,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: gui/package-lock.json
+          cache-dependency-path: app/package-lock.json
       - run: pip install --require-hashes -r requirements-build.lock
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -90,10 +90,11 @@ jobs:
           python scripts/check_ffmpeg.py packaging/bin/ffmpeg.exe --require-tls --https-url "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/fixtures/audio/tone.webm"
       - name: Build the core with PyInstaller
         run: pyinstaller packaging/core.spec --noconfirm --distpath dist/core --workpath build/pyinstaller
+      # yt-dlp's JavaScript runtime in the installed app: QuickJS, a pinned and checksum-verified download.
+      - name: QuickJS (the JavaScript runtime that ships with the app)
+        run: python scripts/fetch_qjs.py windows
       - name: Smoke test the frozen core
-        run: |
-          $node = (Get-Command node).Source
-          python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore.exe --bin packaging/bin --host-js $node
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore.exe --bin packaging/bin
       # Best effort. YouTube routinely answers GitHub-hosted runners with "Sign in to confirm you're not a
       # bot", which says nothing about the build, so a failure here is a warning and does not stop the
       # release. The frozen-core checks above stay required. After a release, play one link from the
@@ -101,9 +102,7 @@ jobs:
       - name: Real YouTube resolve + JS solver download (best effort)
         id: live-resolve
         continue-on-error: true
-        run: |
-          $node = (Get-Command node).Source
-          python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore.exe --bin packaging/bin --resolve-only --host-js $node
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore.exe --bin packaging/bin --resolve-only
       - name: Flag a failed live YouTube check
         if: steps.live-resolve.outcome == 'failure'
         shell: bash
@@ -113,12 +112,14 @@ jobs:
             echo "### Live YouTube check failed (release not blocked)"
             echo "YouTube often blocks GitHub-hosted runners. Install the build and play one link to confirm."
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Install GUI dependencies
-        working-directory: gui
-        run: npm ci
-      - name: Check the electron-builder config and build inputs
-        working-directory: gui
-        run: npm run check:build -- --require-built
+      - name: Desktop app - install, check and test the page
+        working-directory: app
+        run: |
+          npm ci
+          npm run check
+          npm test
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal
       - name: Detect code-signing secrets
         id: sign
         shell: bash
@@ -132,34 +133,52 @@ jobs:
             echo "signed=false" >> "$GITHUB_OUTPUT"
             echo "::notice::WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD not set: building an unsigned installer."
           fi
-      - name: Build the installer (signed)
+      # The certificate goes into the user's store; Tauri's bundler then signs the app and the installer by thumbprint.
+      - name: Import the code-signing certificate
         if: steps.sign.outputs.signed == 'true'
-        working-directory: gui
+        shell: pwsh
         env:
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npm run dist
-      - name: Build the installer (unsigned)
-        if: steps.sign.outputs.signed != 'true'
-        working-directory: gui
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist
-      # The installer has no JavaScript runtime of its own: yt-dlp runs the app's executable as Node.
-      # This proves the built app can do that (and that Electron's runAsNode fuse is still on).
-      - name: Packaged app works as the JavaScript runtime
-        run: python scripts/check_host_runtime.py "dist/app/win-unpacked/Twitch Radio.exe"
-      - name: Electron fuses match the build config
-        working-directory: gui
-        run: node scripts/check-fuses.js "../dist/app/win-unpacked/Twitch Radio.exe"
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          if ($env:WIN_CSC_LINK -match '^https://') { Invoke-WebRequest -Uri $env:WIN_CSC_LINK -OutFile $pfx }
+          else { [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_CSC_LINK)) }
+          $password = ConvertTo-SecureString -String $env:WIN_CSC_KEY_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          python scripts/tauri_signing_config.py $cert.Thumbprint app/src-tauri/tauri.signing.conf.json
+      - name: Build the installer
+        working-directory: app
+        shell: pwsh
+        run: |
+          $configs = @("src-tauri/tauri.release.conf.json")
+          if (Test-Path src-tauri/tauri.signing.conf.json) { $configs += "src-tauri/tauri.signing.conf.json" }
+          $args = @("tauri", "build", "--bundles", "nsis")
+          foreach ($c in $configs) { $args += @("--config", $c) }
+          npx @args
+      # Install the built installer for real, silently, and run the frozen core from where it landed:
+      # this is what proves the installed layout (core\, bin\ with ffmpeg and QuickJS) is what the app expects.
+      - name: Installed layout works
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "app/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Installer not found" }
+          $dir = Join-Path $env:RUNNER_TEMP "pyxeeradio-installed"
+          Start-Process -FilePath $installer.FullName -ArgumentList "/S", "/D=$dir" -Wait
+          foreach ($f in "PyxeeRadio.exe", "core\PyxeeRadioCore.exe", "bin\ffmpeg.exe", "bin\qjs.exe") {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "Missing from the installed app: $f" }
+          }
+          python scripts/smoke_core.py --exe "$dir\core\PyxeeRadioCore.exe" --bin "$dir\bin"
+          Get-Item "$dir\PyxeeRadio.exe", $installer.FullName | ForEach-Object { "{0}: {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
       - name: Collect release files
         shell: pwsh
         run: |
-          $built = "dist/app/Twitch Radio Setup $env:VERSION.exe"
-          if (-not (Test-Path $built)) { throw "Installer not found: $built" }
+          $built = Get-ChildItem "app/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $built) { throw "Installer not found" }
           New-Item -ItemType Directory -Force -Path release | Out-Null
           # GitHub turns spaces in asset names into dots; name the file as users will receive it.
-          Copy-Item $built "release/Twitch.Radio.Setup.$env:VERSION.exe"
+          Copy-Item $built.FullName "release/PyxeeRadio.Setup.$env:VERSION.exe"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-windows
@@ -184,7 +203,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: gui/package-lock.json
+          cache-dependency-path: app/package-lock.json
       - run: pip install --require-hashes -r requirements-build.lock
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -193,39 +212,56 @@ jobs:
       - run: chmod +x packaging/bin/ffmpeg
       - name: Build the core with PyInstaller
         run: pyinstaller packaging/core.spec --noconfirm --distpath dist/core --workpath build/pyinstaller
+      # yt-dlp's JavaScript runtime in the installed app: QuickJS, a pinned and checksum-verified download.
+      - name: QuickJS (the JavaScript runtime that ships with the app)
+        run: python scripts/fetch_qjs.py linux
       - name: Smoke test the frozen core
-        run: python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore --bin packaging/bin --host-js "$(command -v node)"
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore --bin packaging/bin
       # Best effort, like the Windows job: YouTube often refuses GitHub-hosted runners.
       - name: Real YouTube resolve + JS solver download (best effort)
         id: live-resolve
         continue-on-error: true
-        run: python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore --bin packaging/bin --resolve-only --host-js "$(command -v node)"
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore --bin packaging/bin --resolve-only
       - name: Flag a failed live YouTube check
         if: steps.live-resolve.outcome == 'failure'
         run: |
           echo "::warning title=Live YouTube check failed (Linux)::YouTube refused the CI runner or the JS solver could not be downloaded. The release was not blocked."
-      - name: Install GUI dependencies
-        working-directory: gui
-        run: npm ci
-      - name: Check the electron-builder config and build inputs
-        working-directory: gui
-        run: npm run check:build -- --require-built
-      - name: Build the AppImage and tarball
-        working-directory: gui
-        run: npm run dist:linux
-      - name: Packaged app works as the JavaScript runtime
-        run: python scripts/check_host_runtime.py dist/app/linux-unpacked/twitch-radio
-      - name: Electron fuses match the build config
-        working-directory: gui
-        run: node scripts/check-fuses.js ../dist/app/linux-unpacked/twitch-radio
+      - name: Desktop app - install, check and test the page
+        working-directory: app
+        run: |
+          npm ci
+          npm run check
+          npm test
+      - name: System libraries the shell links against (WebKitGTK, the tray)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config xdg-utils
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build the desktop app
+        working-directory: app
+        run: npx tauri build --no-bundle
+      - name: Package the tarball
+        run: scripts/package-linux.sh "$VERSION"
+      # Unpack the tarball the way a user would and run the frozen core from where it landed: this proves
+      # the layout (core/, bin/ with ffmpeg and QuickJS) is what the app expects.
+      - name: Unpacked tarball works
+        run: |
+          dir="$(mktemp -d)"
+          tar -C "$dir" -xzf "dist/app/PyxeeRadio-${VERSION}-linux-x64.tar.gz"
+          root="$dir/PyxeeRadio-${VERSION}-linux-x64"
+          for f in PyxeeRadio core/PyxeeRadioCore bin/ffmpeg bin/qjs; do test -x "$root/$f" || { echo "Missing or not executable: $f"; exit 1; }; done
+          python scripts/smoke_core.py --exe "$root/core/PyxeeRadioCore" --bin "$root/bin"
+          ldd "$root/PyxeeRadio" | grep -i "not found" && { echo "The app links against a library that is missing"; exit 1; } || true
+          ls -la dist/app "$root/PyxeeRadio"
       - name: Collect release files
         run: |
           mkdir -p release
-          for ext in AppImage tar.gz; do
-            f="dist/app/Twitch-Radio-${VERSION}-linux-x64.${ext}"
-            test -f "$f" || { echo "Not found: $f"; exit 1; }
-            cp "$f" release/
-          done
+          f="dist/app/PyxeeRadio-${VERSION}-linux-x64.tar.gz"
+          test -f "$f" || { echo "Not found: $f"; exit 1; }
+          cp "$f" release/
           ls -la release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -262,7 +298,7 @@ jobs:
         run: |
           cp THIRD_PARTY_NOTICES.txt release/
           cd release
-          sha256sum Twitch.Radio.Setup.*.exe Twitch-Radio-*-linux-x64.* > SHA256SUMS.txt
+          sha256sum PyxeeRadio.Setup.*.exe PyxeeRadio-*-linux-x64.* > SHA256SUMS.txt
           cat SHA256SUMS.txt
       # Needs a public repo, or GitHub Enterprise Cloud for a private one. Never blocks the release.
       - name: Attest build provenance
@@ -271,8 +307,8 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            release/Twitch.Radio.Setup.*.exe
-            release/Twitch-Radio-*-linux-x64.*
+            release/PyxeeRadio.Setup.*.exe
+            release/PyxeeRadio-*-linux-x64.*
       - name: Write release notes
         env:
           # AI release notes, tried in this order; with none available the notes come from commit
@@ -316,12 +352,11 @@ jobs:
           flags=()
           case "$TAG" in *-*) flags+=(--prerelease) ;; esac
           gh release create "$TAG" \
-            "release/Twitch.Radio.Setup.${VERSION}.exe#Twitch Radio Setup ${VERSION}.exe" \
-            "release/Twitch-Radio-${VERSION}-linux-x64.AppImage" \
-            "release/Twitch-Radio-${VERSION}-linux-x64.tar.gz" \
+            "release/PyxeeRadio.Setup.${VERSION}.exe#PyxeeRadio Setup ${VERSION}.exe" \
+            "release/PyxeeRadio-${VERSION}-linux-x64.tar.gz" \
             release/SHA256SUMS.txt \
             release/THIRD_PARTY_NOTICES.txt \
-            --title "Twitch Radio ${VERSION}" \
+            --title "PyxeeRadio ${VERSION}" \
             --notes-file notes.md \
             --verify-tag \
             "${flags[@]}"

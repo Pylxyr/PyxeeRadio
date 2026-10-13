@@ -477,3 +477,94 @@ def test_a_song_that_is_still_loading_stays_in_the_queue_view(monkeypatch: pytes
         assert view.now is None
 
     run(scenario())
+
+
+# -- pause and resume --------------------------------------------------------------------------------
+
+
+def _skips() -> int:
+    return player_mod.counters.count_last_hour("skips")
+
+
+def test_pausing_is_not_counted_as_a_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        rig = Rig(monkeypatch)
+        rig.start()
+        try:
+            before = _skips()
+            assert rig.player.pause()
+            assert _skips() == before
+            assert rig.current.killed, "the song is cut at once"
+        finally:
+            await rig.close()
+
+    run(scenario())
+
+
+def test_pause_keeps_the_interrupted_song_at_the_front_for_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        rig = Rig(monkeypatch)
+        rig.start()
+        try:
+            rig.player.enqueue(request("later"))
+            assert rig.player.pause()
+            assert [r.title for r in rig.player.queued_items()] == ["current", "later"]
+            assert rig.player.queued_items()[0].bypass_listener_pause
+            assert not rig.player.pause(), "pausing twice changes nothing"
+            assert rig.player.resume() and not rig.player.resume()
+        finally:
+            await rig.close()
+
+    run(scenario())
+
+
+def test_pausing_right_after_a_skip_does_not_bring_the_skipped_song_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        rig = Rig(monkeypatch)
+        rig.start()
+        try:
+            rig.player.enqueue(request("next"))
+            await until(lambda: rig.ready("next"))
+            assert await rig.player.skip() is SkipResult.SKIPPED  # the song is cut, still winding down
+            assert rig.player.pause()
+            assert [r.title for r in rig.player.queued_items()] == ["next"], (
+                "the skipped song must stay skipped"
+            )
+        finally:
+            await rig.close()
+
+    run(scenario())
+
+
+def test_skip_while_paused_says_so_instead_of_nothing_playing(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        rig = Rig(monkeypatch)
+        rig.start()
+        try:
+            rig.player.pause()
+            assert await rig.player.skip() is SkipResult.PAUSED
+        finally:
+            await rig.close()
+
+    run(scenario())
+
+
+def test_a_skip_waiting_for_its_successor_gives_up_when_paused(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        rig = Rig(monkeypatch)
+        rig.gate = asyncio.Event()  # the next song never becomes ready
+        rig.start()
+        try:
+            rig.player.enqueue(request("a"))
+            await until(lambda: "a" in rig.resolved)
+            skipping = asyncio.create_task(rig.player.skip(wait=5))
+            await asyncio.sleep(0.1)
+            rig.player.pause()
+            assert await asyncio.wait_for(skipping, 3) is SkipResult.PAUSED
+        finally:
+            rig.gate.set()
+            await rig.close()
+
+    run(scenario())

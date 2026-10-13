@@ -50,7 +50,7 @@ jobs:
             VERSION="$EXACT"
           elif [ -z "$(git tag --list 'v*.*.*')" ]; then
             # Nothing has been released yet, so the version already in the files is the first release.
-            VERSION="$(python3 -c "import json; print(json.load(open('gui/package.json'))['version'])")"
+            VERSION="$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")"
             echo "::notice::No release tag exists yet, so releasing the current version ($VERSION) as is."
           else
             VERSION="$(python3 scripts/bump-version.py --next "$BUMP")"

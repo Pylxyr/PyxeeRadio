@@ -243,7 +243,7 @@ def run_headless() -> int:
             return EXIT_CONFIG
 
         configure_logging(settings, console=False, bus=bus)
-        logging.getLogger("twitch_radio.headless").info("Twitch Radio core %s starting.", APP_VERSION)
+        logging.getLogger("twitch_radio.headless").info("PyxeeRadio core %s starting.", APP_VERSION)
 
         async def main() -> int:
             runtime = BotRuntime(settings, emit=emitter.send)

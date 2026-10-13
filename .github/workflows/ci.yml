@@ -94,25 +94,35 @@ jobs:
           diff <(grep -v '^#' /tmp/before.lock) <(grep -v '^#' /tmp/after.lock) \
             || { echo "::error::requirements-build.lock is out of date. Regenerate it (see its header)."; exit 1; }
 
-  electron:
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: gui
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: "1" # lint and config checks never start Electron
+  # The desktop app: the Svelte page (type check, unit and component tests, production build) and the
+  # Rust shell (unit tests). The shell compiles the built page into itself, so the page is built first.
+  app:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: gui/package-lock.json
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run check
-      - run: npm test
-      - run: npm run check:build
+          cache-dependency-path: app/package-lock.json
+      - name: Page - install, type check, test, build
+        working-directory: app
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+      - name: System libraries the shell links against (WebKitGTK, the tray)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config xdg-utils
+      - name: Shell - tests and lints
+        working-directory: app/src-tauri
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
 
   changes:
     if: github.event_name == 'pull_request'
@@ -127,7 +137,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -Eq '^(twitch_radio/|packaging/|gui/|requirements[^/]*\.txt$|scripts/smoke_core\.py$|scripts/check_ffmpeg\.py$|tests/fixtures/audio/|\.github/workflows/ci\.yml$)'; then
+          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -Eq '^(twitch_radio/|packaging/|app/|requirements[^/]*\.txt$|scripts/smoke_core\.py$|scripts/check_ffmpeg\.py$|scripts/fetch_qjs\.py$|tests/fixtures/audio/|\.github/workflows/ci\.yml$)'; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"
@@ -162,15 +172,13 @@ jobs:
           python scripts/check_ffmpeg.py packaging/bin/ffmpeg.exe --require-tls --https-url "https://raw.githubusercontent.com/${{ github.repository }}/$env:SHA/tests/fixtures/audio/tone.webm"
       - name: Build the core with PyInstaller
         run: pyinstaller packaging/core.spec --noconfirm --distpath dist/core --workpath build/pyinstaller
+      - name: QuickJS, the JavaScript runtime that ships with the app (pinned, checksum-verified)
+        run: python scripts/fetch_qjs.py windows
       - name: Smoke test the frozen core
-        run: |
-          $node = (Get-Command node).Source
-          python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore.exe --bin packaging/bin --host-js $node
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore.exe --bin packaging/bin
       - name: Real YouTube resolve + JS solver download (needs the network; may fail on a PR)
         continue-on-error: true
-        run: |
-          $node = (Get-Command node).Source
-          python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore.exe --bin packaging/bin --resolve-only --host-js $node
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore.exe --bin packaging/bin --resolve-only
 
   linux-build-smoke:
     needs: [changes, ffmpeg]
@@ -189,10 +197,12 @@ jobs:
           name: ffmpeg-linux-x64
           path: packaging/bin
       - run: chmod +x packaging/bin/ffmpeg
+      - name: QuickJS, the JavaScript runtime that ships with the app (pinned, checksum-verified)
+        run: python scripts/fetch_qjs.py linux
       - name: Build the core with PyInstaller
         run: pyinstaller packaging/core.spec --noconfirm --distpath dist/core --workpath build/pyinstaller
       - name: Smoke test the frozen core
-        run: python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore --bin packaging/bin --host-js "$(command -v node)"
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore --bin packaging/bin
       - name: Real YouTube resolve + JS solver download (needs the network; may fail on a PR)
         continue-on-error: true
-        run: python scripts/smoke_core.py --exe dist/core/TwitchRadioCore/TwitchRadioCore --bin packaging/bin --resolve-only --host-js "$(command -v node)"
+        run: python scripts/smoke_core.py --exe dist/core/PyxeeRadioCore/PyxeeRadioCore --bin packaging/bin --resolve-only
