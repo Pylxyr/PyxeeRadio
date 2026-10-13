@@ -154,9 +154,10 @@ jobs:
         run: |
           $configs = @("src-tauri/tauri.release.conf.json")
           if (Test-Path src-tauri/tauri.signing.conf.json) { $configs += "src-tauri/tauri.signing.conf.json" }
-          $args = @("tauri", "build", "--bundles", "nsis")
-          foreach ($c in $configs) { $args += @("--config", $c) }
-          npx @args
+          $tauriArgs = @("tauri", "build", "--bundles", "nsis")
+          foreach ($c in $configs) { $tauriArgs += @("--config", $c) }
+          npx @tauriArgs
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed ($LASTEXITCODE)" }
       # Install the built installer for real, silently, and run the frozen core from where it landed:
       # this is what proves the installed layout (core\, bin\ with ffmpeg and QuickJS) is what the app expects.
       - name: Installed layout works
