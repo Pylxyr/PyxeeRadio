@@ -214,23 +214,27 @@ async fn start_bot_now(sh: &Sh) -> Value {
     if let Some(stdout) = child.stdout.take() {
         let sh = sh.clone();
         tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                on_core_line(&sh, &line).await;
-            }
+            for_each_line(stdout, |line| {
+                let sh = sh.clone();
+                async move { on_core_line(&sh, &line).await }
+            })
+            .await;
         });
     }
     if let Some(stderr) = child.stderr.take() {
         let sh = sh.clone();
         tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
+            for_each_line(stderr, |line| {
+                let sh = sh.clone();
+                async move {
+                    if line.trim().is_empty() {
+                        return;
+                    }
+                    let level = if ["Traceback", "Error", "Exception"].iter().any(|word| line.contains(word)) { "ERROR" } else { "WARNING" };
+                    sh.logs.push(level, "stderr", &line, None, false);
                 }
-                let level = if ["Traceback", "Error", "Exception"].iter().any(|word| line.contains(word)) { "ERROR" } else { "WARNING" };
-                sh.logs.push(level, "stderr", &line, None, false);
-            }
+            })
+            .await;
         });
     }
     {
@@ -249,6 +253,30 @@ async fn start_bot_now(sh: &Sh) -> Value {
     }
     update_watching(sh, true);
     status(sh)
+}
+
+/// Calls `each` with every line `reader` produces, until it ends.
+///
+/// A line that is not valid UTF-8 (ffmpeg or a native library writing straight to the pipe) is decoded
+/// lossily and carried on from. `lines().next_line()` returns an error for such a line, and a
+/// `while let Ok(Some(line))` loop treats that as the end of the stream: the page would stop getting log
+/// lines for good, and with the read end of the pipe closed the core's own writer (see Emitter in
+/// twitch_radio/headless.py) gives up and nothing more is ever sent: no state, no answers to commands.
+async fn for_each_line<R, F, Fut>(reader: R, mut each: F)
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) | Err(_) => break, // the end of the stream, or the pipe itself is gone
+            Ok(_) => each(String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string()).await,
+        }
+    }
 }
 
 pub(crate) fn hide_console(command: &mut Command) {
@@ -536,4 +564,31 @@ pub fn shutdown_blocking(sh: &Sh) {
         }
     });
     kill_now(sh);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn collect(bytes: &[u8]) -> Vec<String> {
+        let seen = std::sync::Mutex::new(Vec::new());
+        for_each_line(bytes, |line| {
+            seen.lock().unwrap().push(line);
+            async {}
+        })
+        .await;
+        seen.into_inner().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_does_not_end_the_stream() {
+        let got = collect(b"first\nbad \xff\xfe line\nthird\r\nlast, no newline").await;
+        assert_eq!(got, ["first", "bad \u{fffd}\u{fffd} line", "third", "last, no newline"]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_stream_and_blank_lines() {
+        assert!(collect(b"").await.is_empty());
+        assert_eq!(collect(b"a\n\nb\n").await, ["a", "", "b"]);
+    }
 }
