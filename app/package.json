@@ -1,7 +1,7 @@
 {
   "name": "pyxee-radio",
   "productName": "PyxeeRadio",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "PyxeeRadio: desktop control panel for the song-request radio",
   "private": true,
   "type": "module",
