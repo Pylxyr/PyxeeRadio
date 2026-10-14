@@ -728,7 +728,7 @@
       title: 'Audio & playback',
       fields: [
         { key: 'AUDIO_BITRATE_KBPS', label: 'Audio bitrate (kbps)', type: 'number', min: 64, max: 256, placeholder: '160', hint: 'Opus quality of the stream sent to OBS.' },
-        { key: 'OVERLAY_DELAY_SECONDS', label: 'Overlay delay (seconds)', type: 'number', min: 0, max: 15, placeholder: '4', hint: 'The overlay and dashboard trail the player by this much, to match what you hear (OBS buffers the stream). It only makes up for OBS: a skip waits for the next song to be ready on its own. Raise it if they change before the sound does; lower it if they lag.' },
+        { key: 'OVERLAY_DELAY_SECONDS', label: 'Overlay delay (seconds)', type: 'number', min: 0, max: 15, placeholder: '3', hint: 'The overlay and dashboard trail the player by this much, to match what you hear (OBS buffers the stream). It only makes up for OBS: a skip waits for the next song to be ready on its own. Raise it if they change before the sound does; lower it if they lag.' },
         { key: 'PAUSE_QUEUE_WHEN_NO_LISTENERS', label: 'Pause when nobody is listening', type: 'bool', def: false, hint: 'Holds the queue while OBS has no audio source connected.' },
       ],
     },

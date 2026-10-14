@@ -102,28 +102,40 @@ async def handle_thumb_proxy(request: web.Request) -> web.Response:
 
 
 async def handle_stream(request: web.Request) -> web.StreamResponse:
+    """The radio itself: one endless Ogg/Opus stream, silence while nothing plays.
+
+    The player's encoder runs for as long as the bot does, so the header is always on hand and live
+    pages follow within a fraction of a second; a connection is never left waiting for a song."""
     ctx = get_ctx(request)
     response = web.StreamResponse(
         status=200,
-        headers={"Content-Type": "audio/ogg", "Cache-Control": "no-cache"},
+        headers={
+            "Content-Type": "audio/ogg",
+            "Cache-Control": "no-store",
+            # A live stream has no length and nothing to seek in; saying so keeps a browser from
+            # waiting on (or retrying with) byte ranges.
+            "Accept-Ranges": "none",
+        },
     )
     await response.prepare(request)
     # Subscribe first, then replay the current Ogg header pages so this
     # listener's stream is decodable from byte one.
     queue = ctx.player.subscribe()
     header = ctx.player.ogg_header_snapshot()
-    if header:
-        await response.write(header)
     try:
+        if header:
+            await response.write(header)
         while True:
             chunk = await queue.get()
             if not chunk:
-                # Empty-bytes sentinel from the player's encoder pump: this
-                # subscriber was dropped for falling behind; nothing more
-                # will arrive on this queue.
+                # Empty-bytes sentinel from the player: this subscriber was
+                # dropped (it fell behind, or the encoder session ended);
+                # nothing more will arrive on this queue.
                 break
             await response.write(chunk)
-    except (ConnectionResetError, asyncio.CancelledError):
+    except (ConnectionError, asyncio.CancelledError):
+        # ConnectionError, not just ConnectionResetError: Windows reports a closed OBS source as
+        # ConnectionAbortedError too.
         pass
     finally:
         ctx.player.unsubscribe(queue)

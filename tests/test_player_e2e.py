@@ -96,14 +96,14 @@ def request(name: str) -> QueuedRequest:
     )
 
 
-def test_queue_advances_and_encoder_stays_off_with_nobody_listening(tmp_path: Path) -> None:
+def test_queue_advances_and_lazy_encoder_stays_off_with_nobody_listening(tmp_path: Path) -> None:
     make_audio(tmp_path / "a.webm", 2)
     make_audio(tmp_path / "b.webm", 2)
 
     async def scenario() -> None:
         async with Env(tmp_path) as env:
             tracks = {"a.webm": env.track("a.webm", 2), "b.webm": env.track("b.webm", 2)}
-            player = env.player(tracks)
+            player = env.player(tracks, keep_encoder_running=False)
             player.start()
             try:
                 player.enqueue(request("a.webm"))
@@ -125,7 +125,7 @@ def test_listener_starts_encoder_and_gets_a_decodable_stream(tmp_path: Path) -> 
 
     async def scenario() -> None:
         async with Env(tmp_path) as env:
-            player = env.player({"a.webm": env.track("a.webm", 6)})
+            player = env.player({"a.webm": env.track("a.webm", 6)}, keep_encoder_running=False)
             player.start()
             try:
                 queue = player.subscribe()
@@ -165,7 +165,7 @@ def test_listener_joining_during_header_capture_still_sees_the_first_byte(tmp_pa
 
     async def scenario() -> None:
         async with Env(tmp_path) as env:
-            player = env.player({"a.webm": env.track("a.webm", 4)})
+            player = env.player({"a.webm": env.track("a.webm", 4)}, keep_encoder_running=False)
             player.start()
             try:
                 first = player.subscribe()
@@ -194,7 +194,7 @@ def test_encoder_stops_after_the_last_listener_leaves(
 
     async def scenario() -> None:
         async with Env(tmp_path) as env:
-            player = env.player({})
+            player = env.player({}, keep_encoder_running=False)
             player.start()
             try:
                 queue = player.subscribe()
@@ -273,7 +273,12 @@ def test_songs_play_at_their_own_volume() -> None:
 
 
 def _silent_stretches(ogg: bytes, directory: Path) -> tuple[float, list[float]]:
-    """Total length of a captured stream and every silent stretch in it (>= 0.15 s below -45 dB)."""
+    """The length of the audio in a captured stream - from its first sound to its last - and every
+    silent stretch inside it (>= 0.15 s below -45 dB).
+
+    Silence before the first sound and after the last is not part of either: the stream is live from
+    the moment the encoder starts, so a capture naturally has a moment of quiet in front of the first
+    song and behind the last one."""
     path = directory / "captured.ogg"
     path.write_bytes(ogg)
     pcm = subprocess.run(
@@ -281,6 +286,7 @@ def _silent_stretches(ogg: bytes, directory: Path) -> tuple[float, list[float]]:
         capture_output=True,
         check=True,
     ).stdout
+    total = len(pcm) / (48000 * 2 * 2)
     detect = subprocess.run(
         [FIXTURE_FFMPEG, "-hide_banner", "-nostats", "-i", str(path), "-af", "silencedetect=noise=-45dB:d=0.15",
          "-f", "null", "-"],
@@ -288,12 +294,24 @@ def _silent_stretches(ogg: bytes, directory: Path) -> tuple[float, list[float]]:
         text=True,
         check=True,
     ).stderr  # fmt: skip
-    gaps = [
-        float(line.split("silence_duration:")[1])
-        for line in detect.splitlines()
-        if "silence_duration" in line
+    starts = [
+        float(line.split("silence_start:")[1]) for line in detect.splitlines() if "silence_start" in line
     ]
-    return len(pcm) / (48000 * 2 * 2), gaps
+    ends = [
+        (float(line.split("silence_end:")[1].split("|")[0]), float(line.split("silence_duration:")[1]))
+        for line in detect.splitlines()
+        if "silence_end" in line
+    ]
+    # Pair each start with its end; a start with no end runs to the end of the capture.
+    stretches = [
+        (start, ends[i][0] if i < len(ends) else total, ends[i][1] if i < len(ends) else total - start)
+        for i, start in enumerate(starts)
+    ]
+    edge = 0.05
+    lead = next((end for start, end, _ in stretches if start <= edge), 0.0)
+    tail = next((start for start, end, _ in stretches if end >= total - edge), total)
+    inside = [duration for start, end, duration in stretches if start > edge and end < total - edge]
+    return tail - lead, inside
 
 
 def test_no_silence_between_songs_even_when_the_reported_duration_is_wrong(tmp_path: Path) -> None:

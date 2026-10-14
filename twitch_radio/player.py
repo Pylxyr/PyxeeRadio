@@ -26,12 +26,20 @@ _BYTES_PER_SECOND = AUDIO_RATE * AUDIO_CHANNELS * 2  # s16le
 _CHUNK_BYTES = int(_BYTES_PER_SECOND * _CHUNK_DURATION)
 _SILENCE_CHUNK = b"\x00" * _CHUNK_BYTES
 _STREAM_CHUNK_BYTES = 8192
-# ~5-10s of Opus at typical bitrates; a stalled listener gets dropped, not buffered forever.
-_SUBSCRIBER_QUEUE_SIZE = 50
+# The stream is fanned out one Ogg page at a time, and a page is about _OGG_PAGE_MICROSECONDS of audio,
+# so this is roughly 20 s of stream: a stalled listener gets dropped, not buffered forever.
+_SUBSCRIBER_QUEUE_SIZE = 200
+# How much audio the encoder puts in one Ogg page. ffmpeg's default is a full second, which holds every
+# byte back for up to a second before it leaves the encoder (that is a second more the overlay has to
+# account for), and which makes a silent stream arrive as one tiny page a second - a browser opened on
+# /stream.opus just sat there "loading". 100 ms costs ~30 bytes of page header per page: nothing.
+_OGG_PAGE_MICROSECONDS = 100_000
 
-# The Opus encoder only runs while somebody is connected to /stream.opus, plus
-# this long after the last listener leaves (so an OBS reconnect doesn't churn
-# a process). With nobody listening, decoded audio is simply dropped.
+# By default the Opus encoder runs for as long as the player does, so /stream.opus is a live stream
+# from the moment anybody connects, song or no song (see RadioPlayer's keep_encoder_running). Only
+# when that is turned off does the encoder run just while somebody is connected to /stream.opus,
+# plus this long after the last listener leaves (so an OBS reconnect doesn't churn a process).
+# With no encoder, decoded audio is simply dropped.
 _ENCODER_IDLE_GRACE_SECONDS = 30.0
 # Idle poll interval while no encoder runs. Anything that matters (a new
 # request, pause/resume, a listener arriving) wakes the loop immediately; this
@@ -41,11 +49,17 @@ _IDLE_TICK_SECONDS = 2.0
 # difference nobody can hear at 160 kbps.
 _OPUS_COMPLEXITY = 5
 
-# Default for how far behind real time a listener hears /stream.opus: OBS (or the app's audio
-# element) buffers what it receives before playing it. What the overlay and the dashboard show
-# lags the player by this much, so they change when the sound does and not before. The setting is
-# OVERLAY_DELAY_SECONDS.
-_DEFAULT_OVERLAY_DELAY_SECONDS = 4.0
+# Default for how far behind the encoder's output a listener hears /stream.opus: OBS (or the app's
+# audio element) buffers what it receives before playing it. What the overlay and the dashboard show
+# lags the player by this much *plus* however far the encoder itself is behind the player at that
+# moment (measured, see RadioPlayer._encoder_lead_seconds), so they change when the sound does and
+# not before. The setting is OVERLAY_DELAY_SECONDS.
+_DEFAULT_OVERLAY_DELAY_SECONDS = 3.0
+# Never trust a measured encoder lead beyond this: a stuck encoder must not hold the overlay back for
+# minutes (the encoder is restarted long before that).
+_MAX_ENCODER_LEAD_SECONDS = 5.0
+# The largest an Ogg page can be (27-byte header + 255 segment entries + 255 * 255 bytes of data).
+_MAX_OGG_PAGE_BYTES = 27 + 255 + 255 * 255
 # A song ending and the next one starting closer together than this is one continuous stretch of
 # sound, so the overlay doesn't flash "nothing playing" in between.
 _NO_SONG_DEBOUNCE_SECONDS = 1.5
@@ -77,6 +91,30 @@ def _iter_ogg_pages(buf: bytes) -> tuple[list[bytes], bytes]:
 
 def _ogg_page_granule(page: bytes) -> int:
     return int.from_bytes(page[6:14], "little", signed=True)
+
+
+def _ogg_resync(buf: bytes) -> bytes:
+    """What is left of `buf` once the bytes before its next page boundary are dropped.
+
+    Only needed if the encoder's output ever stops lining up with page boundaries (it should not):
+    without it the leftover would sit in front of every later page for good and nothing more would
+    ever be forwarded to listeners."""
+    if buf[:4] == b"OggS" and len(buf) <= _MAX_OGG_PAGE_BYTES:
+        return buf
+    start = buf.find(b"OggS", 1)
+    if start == -1:
+        return buf[-3:] if len(buf) > 3 else buf  # a capture pattern may be split across reads
+    return buf[start:]
+
+
+def _opus_pre_skip(header_page: bytes) -> int:
+    """The pre-skip (in samples at 48 kHz) from an OpusHead page, 0 if this is not one.
+
+    The encoder's granule positions count from before the first audible sample by this much."""
+    at = header_page.find(b"OpusHead")
+    if at == -1 or len(header_page) < at + 12:
+        return 0
+    return int.from_bytes(header_page[at + 10 : at + 12], "little")
 
 
 _MIN_BACKOFF = 5.0
@@ -208,6 +246,13 @@ def _encoder_cmd(audio_bitrate_kbps: int) -> list[str]:
         "-hide_banner",
         "-loglevel",
         "error",
+        # The input's format is fully spelled out below, so there is nothing to probe. Left at its
+        # defaults ffmpeg waits for a full second of input before it produces a single byte, which
+        # is a second a listener who connects to a fresh encoder has to sit through.
+        "-probesize",
+        "32",
+        "-analyzeduration",
+        "0",
         "-f",
         "s16le",
         "-ar",
@@ -229,6 +274,11 @@ def _encoder_cmd(audio_bitrate_kbps: int) -> list[str]:
         "on",
         "-compression_level",
         str(_OPUS_COMPLEXITY),
+        # Short pages, written out as soon as they are complete (see _OGG_PAGE_MICROSECONDS).
+        "-page_duration",
+        str(_OGG_PAGE_MICROSECONDS),
+        "-flush_packets",
+        "1",
         "-f",
         "ogg",
         "-",
@@ -367,12 +417,17 @@ class _PreparedNext:
 
 
 class RadioPlayer:
-    """Plays the queue and, while anyone is listening, runs one ffmpeg encoder
-    producing a continuous Opus stream from resolved tracks + silence between
-    them, fanned out to any number of HTTP subscribers (see
-    subscribe()/unsubscribe()) — e.g. an OBS Media Source. The encoder starts
-    with the first listener and stops shortly after the last one leaves;
-    meanwhile the queue still advances in real time.
+    """Plays the queue and runs one ffmpeg encoder producing a continuous Opus
+    stream from resolved tracks + silence between them, fanned out to any
+    number of HTTP subscribers (see subscribe()/unsubscribe()) — e.g. an OBS
+    Media Source.
+
+    The encoder runs for as long as the player does (keep_encoder_running), so
+    /stream.opus never waits for anything: whoever connects gets the stream's
+    header and then live audio at once, silence when nothing is playing. With
+    keep_encoder_running off it starts with the first listener and stops shortly
+    after the last one leaves instead; meanwhile the queue still advances in
+    real time.
     """
 
     def __init__(
@@ -383,8 +438,10 @@ class RadioPlayer:
         pause_when_no_listeners: bool = False,
         prefetch_enabled: bool = True,
         overlay_delay_seconds: float = _DEFAULT_OVERLAY_DELAY_SECONDS,
+        keep_encoder_running: bool = True,
     ) -> None:
         self._resolver = resolver
+        self._keep_encoder_running = keep_encoder_running
         self._overlay_delay = max(0.0, float(overlay_delay_seconds))
         self._audio_bitrate_kbps = audio_bitrate_kbps
         self._pause_when_no_listeners = pause_when_no_listeners
@@ -430,11 +487,18 @@ class RadioPlayer:
         # replayed to new subscribers in handle_stream(). See ogg_header_snapshot().
         self._ogg_header_bytes: bytes = b""
         self._ogg_header_ready: bool = False
-        # Every byte the encoder has produced since it started, kept only
+        # Every page the encoder has produced since it started, kept only
         # until the header is complete. A listener who connects in that
         # window is handed these (see subscribe()) so it still sees the
         # stream from its very first byte.
         self._ogg_prehistory: list[bytes] = []
+        # How far the encoder is behind the player, for the overlay's benefit (see
+        # _encoder_lead_seconds): seconds of audio handed to the current encoder, and seconds of it
+        # that have come back out as complete Ogg pages. The pre-skip is the offset between the
+        # encoder's granule positions and the audio it was given.
+        self._encoder_fed_seconds = 0.0
+        self._encoder_emitted_seconds: float | None = None
+        self._opus_pre_skip = 0
         # Set when a listener arrives or leaves: wakes the encoder manager.
         self._subs_changed = asyncio.Event()
         # Set by anything the idle feed loop should react to at once.
@@ -518,13 +582,33 @@ class RadioPlayer:
         """Every change of the current song goes through here: the player's own state changes at
         once, what listeners hear (see audible_view) _overlay_delay later."""
         self._now_playing = now
-        self._audible_events.append((time.monotonic() + self._overlay_delay, now))
-        if self._overlay_delay > 0:
+        # When this reaches a listener: once the encoder has caught up with what the player has
+        # handed it so far (measured, not guessed - it is longer under load) and the listener's own
+        # buffer has played out.
+        delay = self._encoder_lead_seconds() + self._overlay_delay
+        self._audible_events.append((time.monotonic() + delay, now))
+        if delay > 0:
             self._fire_and_forget(
-                self._notify_state_changed_delayed(self._overlay_delay + 0.05),
+                self._notify_state_changed_delayed(delay + 0.05),
                 name="radio-player-overlay-sync",
             )
         self._notify_state_changed()
+
+    def _encoder_lead_seconds(self) -> float:
+        """How much audio the player has handed the encoder that has not come out of it yet.
+
+        What the player does at this instant reaches listeners this much later, before their own
+        buffering. Zero when there is no encoder (nobody has connected to a lazily started one) or it
+        has not produced any audio yet. Accurate to about one Ogg page (_OGG_PAGE_MICROSECONDS)."""
+        emitted = self._encoder_emitted_seconds
+        if self._encoder is None or emitted is None:
+            return 0.0
+        return min(_MAX_ENCODER_LEAD_SECONDS, max(0.0, self._encoder_fed_seconds - emitted))
+
+    @property
+    def stream_lead_seconds(self) -> float:
+        """See _encoder_lead_seconds - for /healthz."""
+        return self._encoder_lead_seconds()
 
     def _audible_now(self) -> NowPlaying | None:
         now = time.monotonic()
@@ -1240,6 +1324,9 @@ class RadioPlayer:
         self._ogg_header_bytes = b""
         self._ogg_header_ready = False
         self._ogg_prehistory = []
+        self._encoder_fed_seconds = 0.0
+        self._encoder_emitted_seconds = None
+        self._opus_pre_skip = 0
 
     async def _run_forever(self) -> None:
         self._backoff = _MIN_BACKOFF
@@ -1252,6 +1339,10 @@ class RadioPlayer:
                 log.exception("Audio encoder session ended — restarting in %.0fs", self._backoff)
             finally:
                 await self._kill_encoder()
+                # Listeners are cut loose with a clean end of stream rather than left attached: the
+                # next encoder is a new bitstream (its own header), which a connection that has
+                # already been fed the old one cannot follow. They reconnect and get the new header.
+                self.close_subscribers()
             if self._stopping:
                 return
             await asyncio.sleep(self._backoff)
@@ -1278,9 +1369,10 @@ class RadioPlayer:
                 await asyncio.gather(feed_task, manager_task, return_exceptions=True)
 
     async def _encoder_manager(self) -> None:
-        """Keeps the encoder running exactly while someone is listening (plus a
-        short grace period), and raises if it dies on its own so the session
-        restarts through the usual backoff path."""
+        """Keeps the encoder running - always, or with keep_encoder_running off
+        exactly while someone is listening (plus a short grace period) - and
+        raises if it dies on its own so the session restarts through the usual
+        backoff path."""
         loop = asyncio.get_running_loop()
         pump: asyncio.Task[None] | None = None
         empty_since: float | None = None
@@ -1290,7 +1382,8 @@ class RadioPlayer:
                 # while we are busy below leaves the event set and the wait at
                 # the bottom returns at once.
                 self._subs_changed.clear()
-                if self._subscribers:
+                wanted = self._keep_encoder_running or bool(self._subscribers)
+                if wanted:
                     empty_since = None
                     if self._encoder is None:
                         await self._spawn_encoder()
@@ -1298,6 +1391,10 @@ class RadioPlayer:
                         pump = asyncio.create_task(
                             self._pump_encoder_output(self._encoder), name="radio-player-encoder-pump"
                         )
+                        # The feed loop may be sitting out an idle tick because there was no
+                        # encoder to write to: tell it there is one now, or the first listener
+                        # waits up to _IDLE_TICK_SECONDS for the first byte of silence.
+                        self._wake.set()
                 elif self._encoder is not None:
                     now = loop.time()
                     if empty_since is None:
@@ -1308,7 +1405,7 @@ class RadioPlayer:
                         empty_since = None
 
                 timeout: float | None = None
-                if not self._subscribers and self._encoder is not None and empty_since is not None:
+                if not wanted and self._encoder is not None and empty_since is not None:
                     timeout = max(0.1, _ENCODER_IDLE_GRACE_SECONDS - (loop.time() - empty_since))
                 waiter = asyncio.ensure_future(self._subs_changed.wait())
                 watched: set[asyncio.Future[Any]] = {waiter}
@@ -1354,11 +1451,16 @@ class RadioPlayer:
         log.info("Audio encoder started (%dkbps Opus).", self._audio_bitrate_kbps)
 
     async def _pump_encoder_output(self, encoder: asyncio.subprocess.Process) -> None:
+        """Reads the encoder's Ogg stream and hands it to listeners one complete page at a time.
+
+        Whole pages, not whatever a read happened to return: a listener who joins mid-stream starts
+        at a page boundary (right after the header pages it is given first) instead of in the middle
+        of a page its decoder would have to throw away."""
         assert encoder.stdout is not None
         stdout = encoder.stdout
         # Per encoder — a restarted ffmpeg is a new logical bitstream
         # (_spawn_encoder already reset the header state).
-        header_parse_buf = b""
+        pending = b""
         while True:
             chunk = await stdout.read(_STREAM_CHUNK_BYTES)
             if not chunk:
@@ -1368,37 +1470,45 @@ class RadioPlayer:
                 # routes this through the same backoff/restart path as any
                 # other encoder failure, with a log line explaining why.
                 raise RuntimeError(f"Encoder stdout closed unexpectedly (exit code {encoder.returncode})")
-            if not self._ogg_header_ready:
-                header_parse_buf += chunk
-                pages, header_parse_buf = _iter_ogg_pages(header_parse_buf)
-                for page in pages:
-                    if _ogg_page_granule(page) == 0:
-                        self._ogg_header_bytes += page
-                    else:
-                        self._ogg_header_ready = True
-                        break
-                if len(self._ogg_header_bytes) > _MAX_OGG_HEADER_BYTES:
-                    self._ogg_header_ready = True
-                if self._ogg_header_ready:
-                    header_parse_buf = b""
+            pages, pending = _iter_ogg_pages(pending + chunk)
+            if not pages:
+                pending = _ogg_resync(pending)
+            for page in pages:
+                self._publish_ogg_page(page)
+
+    def _publish_ogg_page(self, page: bytes) -> None:
+        """One complete page from the encoder: remembered if it is part of the header, noted for
+        the encoder-lead measurement, and sent to every listener."""
+        granule = _ogg_page_granule(page)
+        if not self._ogg_header_ready:
+            if granule == 0:
+                # Header pages (OpusHead, OpusTags) carry no audio, so their granule position is 0.
+                self._ogg_header_bytes += page
+                self._ogg_prehistory.append(page)
+                if not self._opus_pre_skip:
+                    self._opus_pre_skip = _opus_pre_skip(page)
+            else:
+                self._ogg_header_ready = True
+            if len(self._ogg_header_bytes) > _MAX_OGG_HEADER_BYTES:
+                self._ogg_header_ready = True
             if self._ogg_header_ready:
                 self._ogg_prehistory = []
-            else:
-                self._ogg_prehistory.append(chunk)
-            for q in list(self._subscribers):
-                try:
-                    q.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    # A stalled subscriber's handle_stream() is still
-                    # awaiting queue.get() — evict one old chunk to make
-                    # room, then push an empty-bytes sentinel (never
-                    # produced by a real read) that handle_stream() treats
-                    # as "stop", so it actually closes instead of hanging.
-                    self._subscribers.discard(q)
-                    with contextlib.suppress(asyncio.QueueEmpty):
-                        q.get_nowait()
-                    with contextlib.suppress(asyncio.QueueFull):
-                        q.put_nowait(b"")
+        if granule > 0:
+            self._encoder_emitted_seconds = max(0.0, (granule - self._opus_pre_skip) / AUDIO_RATE)
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(page)
+            except asyncio.QueueFull:
+                # A stalled subscriber's handle_stream() is still
+                # awaiting queue.get() — evict one old page to make
+                # room, then push an empty-bytes sentinel (never
+                # produced by a real read) that handle_stream() treats
+                # as "stop", so it actually closes instead of hanging.
+                self._subscribers.discard(q)
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    q.put_nowait(b"")
 
     async def _feed_loop(self) -> None:
         while not self._stopping:
@@ -1455,6 +1565,7 @@ class RadioPlayer:
             return
         try:
             encoder.stdin.write(chunk)
+            self._encoder_fed_seconds += len(chunk) / _BYTES_PER_SECOND
             await encoder.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             if encoder is self._encoder:

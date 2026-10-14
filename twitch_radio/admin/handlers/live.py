@@ -64,6 +64,13 @@ async def handle_healthz(request: web.Request) -> web.Response:
             "uptime_seconds": round(time.monotonic() - ctx.started_at, 1),
             "player_state": ctx.player.state.value,
             "queue_size": ctx.player.queue_size(),
+            # The audio stream: is the encoder up, who is connected, and how far it trails the
+            # player (what the overlay delay is added to).
+            "stream": {
+                "encoder_running": ctx.player.encoder_running,
+                "listeners": ctx.player.listener_count,
+                "lead_seconds": round(ctx.player.stream_lead_seconds, 2),
+            },
             "resolves_last_hour": {
                 "success": counters.count_last_hour("resolve_success"),
                 "failure": counters.count_last_hour("resolve_failure"),

@@ -254,9 +254,10 @@ class Settings:
     log_to_file: bool
     log_dir: Path
 
-    # How far the overlay and dashboard trail the player, to match what listeners hear (OBS and
-    # audio players buffer the stream before playing it).
-    overlay_delay_seconds: float = 4.0
+    # How far the overlay and dashboard trail the player, on top of how far the encoder is behind it
+    # (which the player measures itself), to match what listeners hear: OBS and audio players buffer
+    # the stream before playing it.
+    overlay_delay_seconds: float = 3.0
 
 
 def load_settings() -> Settings:
@@ -359,7 +360,7 @@ def load_settings() -> Settings:
         log_level=_log_level_env("LOG_LEVEL", "INFO"),
         log_to_file=_bool_env("LOG_TO_FILE", True),
         log_dir=LOG_DIR,
-        overlay_delay_seconds=_clamped_float_env("OVERLAY_DELAY_SECONDS", 4.0, 0.0, 15.0),
+        overlay_delay_seconds=_clamped_float_env("OVERLAY_DELAY_SECONDS", 3.0, 0.0, 15.0),
     )
 
 

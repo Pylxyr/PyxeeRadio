@@ -83,8 +83,9 @@ Add two sources to your scene (the dashboard shows the exact addresses with copy
 | **Browser Source** | `http://127.0.0.1:8098/overlay` |
 
 Notes:
-- The audio is one continuous live stream. While OBS is connected and nothing is playing you hear
-  silence rather than a disconnect.
+- The audio is one continuous live stream that is on for as long as the bot runs. Open the address in a
+  browser, or connect OBS, at any time: you get silence while nothing is playing, never a spinner or a
+  disconnect, and the first sound arrives within a fraction of a second.
 - The overlay page has a transparent background and is about 420 px wide; size it in OBS as you like.
 
 The port can be changed in **Settings > Network** if `8098` is taken.
@@ -142,9 +143,10 @@ dashboard are held back by the same amount: the next song appears, and the last 
 it, and a request shows in the queue as soon as it is made. Songs are prepared the moment they are
 queued (the next few are looked up and decoded ahead of time), and a skip only goes through once the next
 song is ready: if it is still loading, the current song keeps playing and the skip is refused (the
-dashboard and chat say so) rather than the overlay racing ahead of silence. *Overlay delay* only makes up
-for OBS's own buffering. If the overlay still runs ahead of the sound, raise it in Settings > Audio &
-playback (default 4 seconds); if it lags behind, lower it.
+dashboard and chat say so) rather than the overlay racing ahead of silence. The bot measures how far its
+own encoder trails the player (a fraction of a second, shown as `stream.lead_seconds` on `/healthz`) and
+adds that itself; *Overlay delay* only makes up for OBS's own buffering. If the overlay still runs ahead
+of the sound, raise it in Settings > Audio & playback (default 3 seconds); if it lags behind, lower it.
 
 **Gapless playback.** The next song is looked up a minute before the current one ends and its decoder
 is started and waiting about eight seconds before the end, tracked by how much of the song has actually
@@ -168,7 +170,7 @@ and auto-radio on/off.
 | Setting | Default | What it does |
 |---|---|---|
 | Audio bitrate | `160` kbps | Opus quality of the stream sent to OBS. 160 is already transparent for nearly everything. |
-| Overlay delay | `4` s | How far the overlay and dashboard trail the player, to match what you hear (see above). |
+| Overlay delay | `3` s | How far the overlay and dashboard trail the player (on top of the encoder's own, measured, lag) to match what you hear (see above). |
 | Pause when nobody is listening | off | Hold the queue while OBS isn't connected, so songs don't quietly play through while you're offline. |
 | Port | `8098` | The local web server's port. |
 | Parallel lookups | `2` | The most YouTube lookups that may run at once. |
@@ -182,11 +184,11 @@ and auto-radio on/off.
 
 PyxeeRadio is designed to cost almost nothing while you stream.
 
-- **Nobody listening, nothing playing:** the audio encoder is not running and the bot wakes only
-  when something happens. The Python process is well under 100 MB.
-- **Playing:** one small decoder process per song plus one Opus encoder (only while OBS or a
-  browser is connected to `/stream.opus`). The next song is prepared ahead of time so the hand-over
-  is gapless.
+- **Nothing playing:** the bot feeds silence to its one Opus encoder (a small, steady load: ffmpeg
+  encoding silence, roughly 1% of one CPU core) so that `/stream.opus` is always a live stream, and
+  otherwise wakes only when something happens. The Python process is well under 100 MB.
+- **Playing:** one small decoder process per song plus that same Opus encoder. The next song is
+  prepared ahead of time so the hand-over is gapless.
 - **Looking up songs:** YouTube lookups run in separate processes that are started when a request
   needs them and exit after two idle minutes, so they use memory only while `!sr` is active.
 - **Desktop app window:** when the window is closed to the tray it is really closed (no hidden

@@ -232,10 +232,10 @@ def test_the_removed_player_mode_setting_only_warns(
 
 def test_overlay_delay_default_and_clamp(monkeypatch: pytest.MonkeyPatch, settings: config.Settings) -> None:
     assert not hasattr(settings, "mode")  # no music-player mode any more
-    assert settings.overlay_delay_seconds == 4.0
+    assert settings.overlay_delay_seconds == 3.0
     monkeypatch.setenv("OVERLAY_DELAY_SECONDS", "2.5")
     assert config.load_settings().overlay_delay_seconds == 2.5
     monkeypatch.setenv("OVERLAY_DELAY_SECONDS", "99")
     assert config.load_settings().overlay_delay_seconds == 15.0
     monkeypatch.setenv("OVERLAY_DELAY_SECONDS", "soon")
-    assert config.load_settings().overlay_delay_seconds == 4.0
+    assert config.load_settings().overlay_delay_seconds == 3.0

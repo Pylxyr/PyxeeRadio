@@ -397,13 +397,23 @@ function render(data, elapsed) {
 
   // Runs once a second via refresh() — only touches the two changing nodes,
   // not a full innerHTML rebuild (which would undo the animations above).
-  const pct = data.duration_seconds > 0 ? Math.min(100, (elapsed / data.duration_seconds) * 100) : 0;
+  const pctOf = (seconds) =>
+    data.duration_seconds > 0 ? Math.min(100, (seconds / data.duration_seconds) * 100) : 0;
+  const pct = pctOf(elapsed);
   const fillEl = document.getElementById('t-fill');
   const elapsedEl = document.getElementById('t-elapsed');
   if (fillEl) {
     // A new track starts again from zero: jump there rather than sweeping back.
-    fillEl.style.transition = pct < lastPct ? 'none' : '';
-    fillEl.style.transform = `scaleX(${(pct / 100).toFixed(4)})`;
+    if (pct < lastPct) {
+      fillEl.style.transition = 'none';
+      fillEl.style.transform = `scaleX(${(pct / 100).toFixed(4)})`;
+      void fillEl.offsetWidth;  // make the jump count before the transition comes back
+      fillEl.style.transition = '';
+    }
+    // The fill takes a second to get where it is sent (see .fill), so it is sent where the song will
+    // be a second from now: it then passes each point at the moment the sound does, instead of
+    // trailing it by that second.
+    fillEl.style.transform = `scaleX(${(pctOf(elapsed + 1) / 100).toFixed(4)})`;
     lastPct = pct;
   }
   const elapsedText = fmt(elapsed);
@@ -428,6 +438,7 @@ async function poll() {
     last = await res.json();
     lastFetchedAt = performance.now();
     refresh();
+    scheduleTick();
   } catch (e) { /* keep showing the last known state */ }
 }
 
@@ -446,6 +457,7 @@ function connectWs() {
       last = JSON.parse(ev.data);
       lastFetchedAt = performance.now();
       refresh();
+      scheduleTick();
     } catch (e) { /* malformed frame — next one (or poll()) recovers */ }
   };
   socket.onclose = () => { if (ws === socket) ws = null; setTimeout(connectWs, 2000); };
@@ -455,16 +467,33 @@ function connectWs() {
 // Draws the current state. Called when a message arrives and once a second to
 // advance the clock; nothing runs per frame, and nothing at all while OBS has
 // the source hidden.
+function elapsedNow() {
+  const drift = last && last.playing ? (performance.now() - lastFetchedAt) / 1000 : 0;
+  return ((last && last.elapsed_seconds) || 0) + drift;
+}
+
 function refresh() {
   if (!last || document.hidden) return;
-  const drift = last.playing ? (performance.now() - lastFetchedAt) / 1000 : 0;
-  render(last, (last.elapsed_seconds || 0) + drift);
+  render(last, elapsedNow());
+}
+
+// The clock is redrawn when the song's own second changes, not on a free-running one-second timer
+// that is up to a second off the sound whichever moment the page happened to load.
+let tickTimer = 0;
+function scheduleTick() {
+  clearTimeout(tickTimer);
+  let wait = 1000;
+  if (last && last.playing) {
+    const elapsed = elapsedNow();
+    wait = (1 - (elapsed - Math.floor(elapsed))) * 1000 + 20;
+  }
+  tickTimer = setTimeout(() => { refresh(); scheduleTick(); }, Math.min(1000, Math.max(50, wait)));
 }
 
 connectWs();
 poll();
 setInterval(poll, 5000);
-setInterval(refresh, 1000);
-document.addEventListener('visibilitychange', refresh);
+scheduleTick();
+document.addEventListener('visibilitychange', () => { refresh(); scheduleTick(); });
 </script>
 </body></html>
