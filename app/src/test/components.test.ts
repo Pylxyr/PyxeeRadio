@@ -20,7 +20,7 @@ import LogsTab from '../components/LogsTab.svelte';
 import Sidebar from '../components/Sidebar.svelte';
 import SettingsTab from '../components/SettingsTab.svelte';
 import { discard, form } from '../lib/form.svelte';
-import { LOG_CAP, addLogs, logView, logs, setLogs } from '../lib/logs.svelte';
+import { LOG_CAP, addLogs, clearLogs, logView, logs, setLogs } from '../lib/logs.svelte';
 import { bot, info, prefs, toasts, ui } from '../lib/store.svelte';
 import { applyAppearance, appearance } from '../lib/theme.svelte';
 import type { Snapshot } from '../lib/types';
@@ -287,6 +287,47 @@ describe('logs', () => {
     await settle();
     expect(target.querySelectorAll('.ll').length).toBe(8);
     expect(target.querySelector('.log-foot')?.textContent).toContain('8 of 8 lines');
+  });
+
+  it('a line the shell sends twice (in the snapshot, then again in the first batch) is shown once, and the tab still opens', async () => {
+    // Startup race: a line pushed just before logs_get ran is in the snapshot and also in the 100 ms batch.
+    setLogs(entries(3));
+    addLogs(entries(5).slice(2), true); // repeats line 3, brings 4 and 5
+    expect(logs.all.map((e) => e.id)).toEqual([1, 2, 3, 4, 5]);
+    ui.tab = 'logs';
+    show(LogsTab);
+    await settle();
+    expect(target.querySelectorAll('.ll').length).toBe(5);
+    expect(target.querySelector('.log-foot')?.textContent).toContain('5 of 5 lines');
+  });
+
+  it('a snapshot that itself repeats a line, and a batch that arrives late, do not break the tab either', async () => {
+    setLogs([...entries(3), ...entries(3).slice(1)]);
+    expect(logs.all.map((e) => e.id)).toEqual([1, 2, 3]);
+    show(LogsTab);
+    await settle();
+    addLogs(entries(2), true); // all older than what is shown
+    await settle();
+    expect(target.querySelectorAll('.ll').length).toBe(3);
+  });
+
+  it('lines already cleared do not come back with a batch that was in flight', () => {
+    setLogs(entries(3));
+    clearLogs();
+    addLogs(entries(3), false); // the pre-Clear batch arrives afterwards
+    expect(logs.all).toEqual([]);
+    addLogs(entries(4).slice(3), false); // a genuinely new line
+    expect(logs.all.map((e) => e.id)).toEqual([4]);
+  });
+
+  it('repeated copies of an error are not counted as new unseen errors', () => {
+    logView.unseenErrors = 0;
+    setLogs([{ id: 1, ts: 1, level: 'ERROR', logger: 'core', msg: 'boom', cont: false }]);
+    addLogs([{ id: 1, ts: 1, level: 'ERROR', logger: 'core', msg: 'boom', cont: false }], false);
+    expect(logView.unseenErrors).toBe(0);
+    addLogs([{ id: 2, ts: 2, level: 'ERROR', logger: 'core', msg: 'again', cont: false }], false);
+    expect(logView.unseenErrors).toBe(1);
+    logView.unseenErrors = 0;
   });
 
   it('level chips and the search box narrow the view', async () => {
