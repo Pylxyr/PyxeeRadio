@@ -72,6 +72,6 @@ exe = EXE(
     name="PyxeeRadioCore",
     console=True,  # stdin/stdout carry the control protocol; the app starts it hidden
     upx=False,
-    icon=os.path.join(ROOT, "gui", "build", "icon.ico"),
+    icon=os.path.join(ROOT, "app", "src-tauri", "icons", "icon.ico"),
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="PyxeeRadioCore", upx=False)
