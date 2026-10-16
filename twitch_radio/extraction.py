@@ -83,6 +83,26 @@ _WORKER_START_TIMEOUT_SECONDS = 60.0
 _WORKER_TERM_GRACE_SECONDS = 3.0
 
 
+def _clean_headers(raw: Any) -> dict[str, str]:
+    """yt-dlp's `http_headers` as plain str -> str, safe to hand to ffmpeg's `-headers`.
+
+    ffmpeg takes the whole set as one CRLF-separated string, so a line break inside a name or value
+    would smuggle in another header: such entries are dropped, not repaired. Cookies travel
+    separately (Track.http_cookies); a stray `Cookie` header would only duplicate or contradict them."""
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, str] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            continue
+        if not name or ":" in name or any(ch in name + value for ch in "\r\n\0") or name.strip() != name:
+            continue
+        if name.lower() == "cookie":
+            continue
+        clean[name] = value
+    return clean
+
+
 def _is_allowed_url(url: str) -> bool:
     try:
         host = urlsplit(url).hostname or ""
@@ -801,6 +821,7 @@ class Resolver:
         if not stream_url:
             return None
 
+        cookies = item.get("http_cookies")
         track = Track(
             title=item.get("title") or "Unknown title",
             webpage_url=webpage_url,
@@ -814,6 +835,8 @@ class Resolver:
             thumbnail_url=item.get("thumbnail"),
             query=query,
             is_live=bool(item.get("is_live")),
+            http_headers=_clean_headers(item.get("http_headers")),
+            http_cookies=cookies if isinstance(cookies, str) else "",
         )
         ttl = self._settings.ytdlp_cache_ttl_seconds
         if ttl > 0:

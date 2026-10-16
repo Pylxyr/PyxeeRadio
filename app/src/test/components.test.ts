@@ -116,12 +116,25 @@ describe('dashboard', () => {
     expect(toasts.at(-1)?.message).toContain('still loading');
   });
 
-  it('paused: says so, says what Resume does, and Resume is the main button', async () => {
+  it('paused with nothing to carry on from: just says what Resume plays', async () => {
     goLive(snapshot({ now: null, player: { paused: true, listeners: 1, encoder_running: true, encoder_starts: 1 } }));
+    show(Dashboard);
+    expect(target.textContent).toContain('Resume plays “Song B”.');
+    expect(target.textContent).not.toContain('from the beginning');
+  });
+
+  it('paused: says so, says where Resume carries on from, and Resume is the main button', async () => {
+    goLive(
+      snapshot({
+        now: null,
+        player: { paused: true, listeners: 1, encoder_running: true, encoder_starts: 1 },
+        queue: [{ title: 'Song B', requester: 'viewer', resume_at: 83.4 }, { title: 'Mix 1', requester: '', radio: true }],
+      }),
+    );
     api.command.mockResolvedValue({ ok: true });
     show(Dashboard);
     expect(target.querySelector('.now-title')?.textContent).toBe('Paused');
-    expect(target.textContent).toContain('Resume starts “Song B” again from the beginning.');
+    expect(target.textContent).toContain('Resume continues “Song B” from 1:23.');
     expect(target.textContent).not.toContain('Waiting for a request');
     expect(target.querySelector('.tag.warn')?.textContent).toBe('Paused');
     const resume = button('Resume')!;

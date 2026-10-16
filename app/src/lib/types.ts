@@ -33,6 +33,8 @@ export interface QueueItem {
   requester: string;
   radio?: boolean;
   thumbnail?: string;
+  /** Seconds into the song it will carry on from: set for a song that was paused. */
+  resume_at?: number;
 }
 
 export interface Counters {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
@@ -19,6 +19,13 @@ class Track:
     thumbnail_url: str | None = None
     query: str = ""
     is_live: bool = False
+    # What yt-dlp itself sends when it fetches stream_url (the format's `http_headers`: a browser
+    # User-Agent and friends) and the cookies it holds for that address, already formatted the way
+    # ffmpeg's `-cookies` wants them. The CDN ties a stream address to the client that asked for it:
+    # ffmpeg's own "Lavf/..." User-Agent and no cookies is a 403 for many of them, which is why
+    # yt-dlp's own ffmpeg downloader always forwards both (see player._decoder_cmd).
+    http_headers: dict[str, str] = field(default_factory=dict)
+    http_cookies: str = ""
 
 
 _YOUTUBE_ID = re.compile(r"[\w-]{11}")

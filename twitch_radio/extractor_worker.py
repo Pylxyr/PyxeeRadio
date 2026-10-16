@@ -58,6 +58,9 @@ _KEEP_FIELDS = (
     "duration",
     "thumbnail",
     "is_live",
+    # How yt-dlp itself fetches `url` (see models.Track.http_headers). The player's ffmpeg has to send
+    # the same: without it a stream address that works for yt-dlp can answer ffmpeg with a 403.
+    "http_headers",
 )
 
 # Hard ceiling on projected playlist entries, so a pathological playlist
@@ -66,16 +69,33 @@ _KEEP_FIELDS = (
 _MAX_ENTRIES = 50
 
 
-def _project(info: dict[str, Any]) -> dict[str, Any]:
+def _ffmpeg_cookies(ydl: Any, url: Any) -> str:
+    """The cookies yt-dlp would send to `url`, in the form of ffmpeg's `-cookies` option (the same
+    string yt-dlp's own FFmpegFD builds). Empty when there are none or the address is not http(s)."""
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return ""
+    try:
+        cookies = ydl.cookiejar.get_cookies_for_url(url)
+        return "".join(f"{c.name}={c.value}; path={c.path}; domain={c.domain};\r\n" for c in cookies)
+    except Exception:  # noqa: BLE001 — a cookie problem must not cost the whole resolve
+        return ""
+
+
+def _project(info: dict[str, Any], ydl: Any = None) -> dict[str, Any]:
     """Reduces a yt-dlp info dict to _KEEP_FIELDS, recursively for
     `entries`. Nulls are dropped rather than sent — the parent uses
     `.get(...) or <default>` throughout, so absent and None behave
-    identically there and absent is smaller on the wire."""
+    identically there and absent is smaller on the wire. With `ydl`, an item that has a stream
+    address also gets `http_cookies`: what ffmpeg must send along with it (see _ffmpeg_cookies)."""
     out: dict[str, Any] = {}
     for key in _KEEP_FIELDS:
         value = info.get(key)
         if value is not None:
             out[key] = value
+    # Only an item that was resolved to a stream (it has the headers to fetch it with) needs cookies;
+    # a bare search hit is only a pointer to a page.
+    if ydl is not None and info.get("http_headers") and (cookies := _ffmpeg_cookies(ydl, info.get("url"))):
+        out["http_cookies"] = cookies
     entries = info.get("entries")
     if entries is not None:
         # May be a generator in flat-playlist mode; materialise it, drop the
@@ -84,7 +104,7 @@ def _project(info: dict[str, Any]) -> dict[str, Any]:
         for entry in entries:
             if not entry:
                 continue
-            projected.append(_project(entry))
+            projected.append(_project(entry, ydl))
             if len(projected) >= _MAX_ENTRIES:
                 break
         out["entries"] = projected
@@ -117,7 +137,8 @@ class _Worker:
 
         request_id = request.get("id")
         try:
-            info = self._ydl(request["options"]).extract_info(request["query"], download=False)
+            ydl = self._ydl(request["options"])
+            info = ydl.extract_info(request["query"], download=False)
         except yt_dlp.utils.DownloadError as exc:
             # Kept as its own kind so the parent can keep raising its own
             # DownloadError for it, exactly as the in-process path did.
@@ -127,7 +148,7 @@ class _Worker:
                 {"id": request_id, "ok": False, "kind": "other", "error": f"{type(exc).__name__}: {exc}"}
             )
         else:
-            projected = _project(info) if isinstance(info, dict) else {}
+            projected = _project(info, ydl) if isinstance(info, dict) else {}
             self._respond({"id": request_id, "ok": True, "info": projected})
 
     def run(self) -> None:

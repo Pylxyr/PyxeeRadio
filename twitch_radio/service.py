@@ -606,6 +606,8 @@ class BotRuntime:
                     "requester": item.requester_name,
                     "radio": item.requester_id == 0,
                     "thumbnail": item.thumbnail_url,
+                    # A paused song carries on from here when resumed.
+                    **({"resume_at": round(item.start_at, 1)} if item.start_at > 0 else {}),
                 }
                 for item in items[:_MAX_QUEUE_IN_SNAPSHOT]
             ]

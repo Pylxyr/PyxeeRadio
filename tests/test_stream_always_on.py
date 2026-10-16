@@ -7,6 +7,7 @@ Real ffmpeg, no songs: everything here is about the stream itself. Skipped when 
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 import socket
 import subprocess
@@ -327,17 +328,92 @@ def song(title: str) -> NowPlaying:
     )
 
 
-def test_a_change_is_audible_only_after_the_encoder_has_caught_up_and_the_listener_buffer_played() -> None:
+def running_player(**kwargs: Any) -> RadioPlayer:
+    """A player that believes an encoder is running, for tests that feed it pages by hand."""
+    player = make_player(**kwargs)
+    player._encoder = SimpleNamespace(returncode=None)  # type: ignore[assignment]
+    return player
+
+
+def test_a_change_is_audible_when_the_page_carrying_it_goes_out_plus_the_listener_buffer() -> None:
     async def scenario() -> None:
-        player = make_player(overlay_delay_seconds=2.0)
-        player._encoder = SimpleNamespace(returncode=None)  # type: ignore[assignment]  # "an encoder is running"
+        player = running_player(overlay_delay_seconds=2.0)
         player._encoder_fed_seconds = 100.0
-        player._encoder_emitted_seconds = 98.5  # 1.5 s of what the player handed over has not come out
-        assert player.stream_lead_seconds == pytest.approx(1.5)
+        player._set_now_playing(song("a"))
+        event = player._audible_events[-1]
+        assert event.position == 100.0 and event.due == math.inf, "waits for the stream, not the clock"
+        assert player.audible_view().now is None
+
+        player._resolve_audible_events(start=99.7, end=99.9, wall=500.0)  # an earlier page: not it
+        assert event.due == math.inf
+        player._resolve_audible_events(start=99.9, end=100.1, wall=501.0)  # the page that holds 100.0
+        # The page went out at 501.0; position 100.0 is 0.1 s into it; the listener's buffer adds 2 s.
+        assert event.due == pytest.approx(501.0 + 0.1 + 2.0)
+
+    run(scenario())
+
+
+def test_changes_are_audible_in_order_and_never_early() -> None:
+    async def scenario() -> None:
+        player = running_player(overlay_delay_seconds=1.0)
+        player._encoder_fed_seconds = 10.0
+        player._set_now_playing(song("a"))
+        player._encoder_fed_seconds = 20.0
+        player._set_now_playing(None)
+        first, second = player._audible_events
+        player._resolve_audible_events(start=9.9, end=10.1, wall=100.0)
+        assert first.due == pytest.approx(101.1) and second.due == math.inf
+        # The second change goes out in a page that arrived before the first one's moment came
+        # (a catch-up burst): it still may not be heard before it.
+        player._resolve_audible_events(start=19.9, end=20.1, wall=100.2)
+        assert second.due >= first.due
+
+    run(scenario())
+
+
+def test_a_gap_in_a_song_waits_for_the_stream_like_any_other_change() -> None:
+    async def scenario() -> None:
+        player = running_player(overlay_delay_seconds=0.0)
+        player._encoder_fed_seconds = 30.0
+        player._note_gap(0.4)
+        event = player._audible_events[-1]
+        assert event.gap == 0.4 and event.position == 30.0 and event.due == math.inf
+
+    run(scenario())
+
+
+def test_changes_the_encoder_never_delivers_are_not_waited_for_forever() -> None:
+    async def scenario() -> None:
+        player = running_player(overlay_delay_seconds=1.0)
+        player._encoder_fed_seconds = 5.0
+        player._set_now_playing(song("a"))
+        event = player._audible_events[-1]
+        assert player.audible_view().now is None and event.due == math.inf
+        event.created -= player_mod._MAX_ENCODER_LEAD_SECONDS + 0.5  # it has been waiting too long
+        player.audible_view()
+        assert event.due == pytest.approx(event.created + 1.0)
+
+    run(scenario())
+
+
+def test_an_encoder_restart_releases_everything_waiting_on_the_old_one() -> None:
+    async def scenario() -> None:
+        player = running_player(overlay_delay_seconds=0.0)
+        player._encoder_fed_seconds = 5.0
+        player._set_now_playing(song("a"))
+        player._reset_ogg_state()
+        assert player._audible_events[-1].due != math.inf
+
+    run(scenario())
+
+
+def test_without_an_encoder_the_timeline_runs_on_the_clock() -> None:
+    async def scenario() -> None:
+        player = make_player(overlay_delay_seconds=0.5)
         before = time.monotonic()
         player._set_now_playing(song("a"))
-        due = player._audible_events[-1][0]
-        assert before + 3.5 <= due <= time.monotonic() + 3.5 + 0.01, "1.5 s of encoder lead + 2 s of delay"
+        due = player._audible_events[-1].due
+        assert before + 0.5 <= due <= time.monotonic() + 0.5 + 0.01
 
     run(scenario())
 

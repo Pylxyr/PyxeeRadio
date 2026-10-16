@@ -16,13 +16,18 @@
   });
   const percent = $derived(np && np.duration > 0 ? Math.min(100, (elapsed / np.duration) * 100) : 0);
   const paused = $derived(!!s?.player.paused);
-  // Pausing cuts the song and Resume plays it again from the start (nothing here can seek), so say that.
+  // Pausing remembers where the song was and Resume carries on from there; say so.
   const resumeTitle = $derived(s?.queue[0]?.title ?? '');
+  const resumeAt = $derived(s?.queue[0]?.resume_at ?? 0);
   const sub = $derived(
     np
       ? np.uploader || ''
       : paused
-        ? resumeTitle ? `Resume starts “${resumeTitle}” again from the beginning.` : 'Press Resume to continue.'
+        ? resumeTitle
+          ? resumeAt > 0
+            ? `Resume continues “${resumeTitle}” from ${fmtDur(resumeAt)}.`
+            : `Resume plays “${resumeTitle}”.`
+          : 'Press Resume to continue.'
         : live
           ? 'Add a song above, or type !sr <song or link> in your chat.'
           : 'Start the bot, then add a song above or use !sr in chat.',

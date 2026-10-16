@@ -143,10 +143,21 @@ dashboard are held back by the same amount: the next song appears, and the last 
 it, and a request shows in the queue as soon as it is made. Songs are prepared the moment they are
 queued (the next few are looked up and decoded ahead of time), and a skip only goes through once the next
 song is ready: if it is still loading, the current song keeps playing and the skip is refused (the
-dashboard and chat say so) rather than the overlay racing ahead of silence. The bot measures how far its
-own encoder trails the player (a fraction of a second, shown as `stream.lead_seconds` on `/healthz`) and
-adds that itself; *Overlay delay* only makes up for OBS's own buffering. If the overlay still runs ahead
-of the sound, raise it in Settings > Audio & playback (default 3 seconds); if it lags behind, lower it.
+dashboard and chat say so) rather than the overlay racing ahead of silence. Every change the overlay shows
+is stamped with the point of the stream it happens at and shown once that point has really left the encoder
+(the bot watches the stream's own pages for that, it does not guess), plus *Overlay delay*, which only makes
+up for OBS's own buffering. If the overlay still runs ahead of the sound, raise it in Settings > Audio &
+playback (default 3 seconds); if it lags behind, lower it.
+
+**Pause, resume and skip.** Pause remembers exactly where the song was and Resume carries on from that
+point: the song's stream address is kept, so there is no new lookup, chat is not told about the song a
+second time, and the dashboard says where it will continue. (A song left paused so long that its address
+expired is looked up again, once.) Pause and skip cut the sound at once; what you still hear for a moment
+afterwards has already reached OBS and its own buffer, which the bot cannot call back. To keep OBS's
+timing steady the bot feeds the stream a fifth of a second ahead of the clock and always catches up if it
+runs late (OBS answers late audio by adding delay that it never takes back). Each song is also read ahead
+into a few seconds of buffer: if the source stalls or reconnects mid-song the stream carries silence for as
+long as that takes instead of stopping, and the song's clock on the overlay waits for it.
 
 **Gapless playback.** The next song is looked up a minute before the current one ends and its decoder
 is started and waiting about eight seconds before the end, tracked by how much of the song has actually
@@ -277,6 +288,7 @@ open on loopback while the bot runs: that is Twitch's sign-in redirect target.
 | Nothing is heard in OBS | The Media Source must use the `stream.opus` address with *Local File* unticked. Open the same address in a browser to check that the bot is producing sound. |
 | The first `!sr` after a quiet spell takes a moment longer | The lookup process was idle and has to start again (about a second). That is the memory saving at work. |
 | Songs won't resolve | Update yt-dlp from Settings > Updates. If YouTube asks for a sign-in, see *YouTube cookies* above. |
+| A song is skipped as "couldn't be played" | The **Logs** tab says why, straight from ffmpeg (for example `Server returned 403 Forbidden`). The bot sends ffmpeg the same headers and cookies yt-dlp used to find the stream, which is what a 403 usually needs; if it still happens, update yt-dlp. |
 | Port in use at startup | Change the port in Settings > Network, and update the OBS sources to match. |
 | Nothing starts | Run `check-config.bat` (source) or look at the **Logs** tab (app). |
 | Audio keeps playing after closing the console | Close stray `ffmpeg.exe` / `python.exe` processes in Task Manager; always stop with Ctrl+C. |
