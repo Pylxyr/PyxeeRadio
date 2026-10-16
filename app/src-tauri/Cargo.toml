@@ -1,6 +1,6 @@
 [package]
 name = "pyxee-radio"
-version = "1.4.4"
+version = "1.4.5"
 description = "PyxeeRadio: desktop control panel for the song-request radio"
 authors = ["PyxeeRadio"]
 license = "Unlicense"
