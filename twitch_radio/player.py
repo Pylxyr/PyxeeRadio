@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from twitch_radio.models import Track
 from twitch_radio.paths import hidden_subprocess_kwargs
+from twitch_radio.redact import one_line
 from twitch_radio.store import JsonStore
 from twitch_radio.telemetry import counters
 from twitch_radio.youtube import youtube_video_id
@@ -781,6 +782,14 @@ class RadioPlayer:
         self._warm: dict[int, _PreparedNext] = {}
         # Failed preparation attempts per queued song: (attempts so far, earliest next attempt).
         self._prep_attempts: dict[int, tuple[int, float]] = {}
+        # Why the last preparation attempt of a queued song failed (redacted, one line), kept for the
+        # message that says it was dropped. Cleared with _prep_attempts.
+        self._prep_errors: dict[int, str] = {}
+        # Called with a song's page address when the stream address it gave did not play, so the next
+        # lookup is a fresh one (see Resolver.invalidate).
+        self._track_invalidator: Callable[[str], None] | None = None
+        # The latest song that could not be played, for the dashboard: (when, what chat was told).
+        self._last_failure: tuple[float, str] | None = None
         # A skip() waiting for its successor, shared by every skip asked for meanwhile.
         self._skip_waiter: asyncio.Task[SkipResult] | None = None
         # Set by skip() when the queue is empty and the radio mix would supply the next song.
@@ -1200,6 +1209,19 @@ class RadioPlayer:
         # best-effort" callback either way.
         self._notify_failure = notifier
 
+    def set_track_invalidator(self, invalidator: Callable[[str], None] | None) -> None:
+        self._track_invalidator = invalidator
+
+    def _invalidate_track(self, webpage_url: str) -> None:
+        if self._track_invalidator is not None:
+            with contextlib.suppress(Exception):
+                self._track_invalidator(webpage_url)
+
+    @property
+    def last_failure(self) -> tuple[float, str] | None:
+        """(wall-clock time, message) of the latest song that could not be played, or None."""
+        return self._last_failure
+
     def set_duration_limit_getter(self, getter: Callable[[], Awaitable[int]] | None) -> None:
         self._duration_limit_getter = getter
 
@@ -1483,6 +1505,7 @@ class RadioPlayer:
 
     async def _notify_failed(self, message: str) -> None:
         counters.record("tracks_failed")
+        self._last_failure = (time.time(), message)
         await self._notify(message)
 
     def _discard_warm(self, request: QueuedRequest | None = None, *, reap: bool = True) -> list[_PcmSource]:
@@ -1507,6 +1530,7 @@ class RadioPlayer:
         """Drops everything prepared for a request that has left the queue."""
         self._resolved.pop(id(request), None)
         self._prep_attempts.pop(id(request), None)
+        self._prep_errors.pop(id(request), None)
         self._discard_warm(request)
 
     def _fire_and_forget(self, coro: Coroutine[Any, Any, None], name: str) -> None:
@@ -1997,6 +2021,8 @@ class RadioPlayer:
             del self._resolved[key]
         for key in [k for k in self._prep_attempts if k not in live_ids]:
             del self._prep_attempts[key]
+        for key in [k for k in self._prep_errors if k not in live_ids]:
+            del self._prep_errors[key]
         for key, entry in list(self._warm.items()):
             if (
                 key not in warm_ids
@@ -2064,7 +2090,10 @@ class RadioPlayer:
         entry = await self._spawn_ahead(request, resolved.track)
         in_window = any(r is request for r in self._live_pending()[:_WARM_AHEAD])
         if entry is None:
-            self._resolved.pop(key, None)  # the address may be what is wrong: look it up again
+            # The address may be what is wrong: forget it for real (the resolver would otherwise
+            # answer the retry from its cache) and look it up again.
+            self._invalidate_track(request.webpage_url)
+            self._resolved.pop(key, None)
             if in_window:
                 await self._prep_failed(request, "unavailable")
             return
@@ -2095,8 +2124,12 @@ class RadioPlayer:
             "too_long": f"Skipped {request.requester_name}'s song — it's too long to play now.",
         }
         message = notices.get(problem or "", f"Couldn't load {request.requester_name}'s song — skipping it.")
+        detail = self._prep_errors.pop(key, "")
         log.warning(
-            "Dropping %s from the queue: it could not be prepared (%s).", request.webpage_url, problem
+            "Dropping %s from the queue: it could not be prepared (%s)%s",
+            request.webpage_url,
+            problem,
+            f": {detail}" if detail else ".",
         )
         removed = self.purge_pending(lambda r: r is request)
         if removed:
@@ -2139,8 +2172,11 @@ class RadioPlayer:
             track = await self._resolver(request.webpage_url, request.requester_id)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            log.debug("Prepare-ahead resolve failed for %s (non-fatal).", request.webpage_url, exc_info=True)
+        except Exception as exc:
+            detail = one_line(f"{type(exc).__name__}: {exc}")
+            self._prep_errors[id(request)] = detail
+            log.info("Looking up %s ahead of time failed: %s", request.webpage_url, detail)
+            log.debug("Prepare-ahead resolve failure (traceback).", exc_info=True)
             return None, "error"
         if track is None:
             return None, "unavailable"
@@ -2159,22 +2195,21 @@ class RadioPlayer:
                 source = await _open_source(track, request.start_at)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.debug(
-                    "Prepare-ahead decoder spawn failed for %s (non-fatal).",
-                    request.webpage_url,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                detail = one_line(f"{type(exc).__name__}: {exc}")
+                self._prep_errors[id(request)] = f"the decoder could not start ({detail})"
+                log.warning("Could not start the decoder for %s: %s", request.webpage_url, detail)
                 return None
             await source.wait(_DECODER_START_TIMEOUT)
             if not source.has_audio:
                 # Timed out, or the decoder ended without a sound - a 403 from the CDN, say. The
                 # caller looks the address up again and tries a few more times; this says why.
                 reason = await source.error_text() if source.eof else "no audio within the time allowed"
+                self._prep_errors[id(request)] = one_line(reason or "the decoder gave no audio")
                 log.warning(
                     "Could not prepare %s ahead of time: %s",
                     request.webpage_url,
-                    reason or "decoder gave no audio",
+                    one_line(reason or "decoder gave no audio"),
                 )
                 return None
             if request.cancelled:
@@ -2338,19 +2373,22 @@ class RadioPlayer:
                 await source.aclose()
                 self._current_decoder = None
                 source = None
-                if reusable is not None and attempt == 1:
+                if attempt == 1:
+                    # Whether the address was looked up ahead of time or just now, it may be expired,
+                    # refused, or the fast attempt's: forget it so the retry is a fresh, full lookup.
                     log.info(
                         "The stream address for %s no longer works (%s) — looking it up again.",
                         request.webpage_url,
-                        reason or "no audio",
+                        one_line(reason or "no audio"),
                     )
+                    self._invalidate_track(request.webpage_url)
                     reusable = None
                     continue
                 if heard:
                     log.warning(
                         "The decoder gave no audio for %s: %s",
                         request.webpage_url,
-                        reason or "no error output",
+                        one_line(reason or "no error output"),
                     )
                     await self._notify_failed(
                         f"Skipped {request.requester_name}'s song — it couldn't be played."

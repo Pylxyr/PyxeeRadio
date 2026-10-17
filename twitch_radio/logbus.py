@@ -12,6 +12,8 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from twitch_radio.redact import redact_text
+
 LogEntry = dict[str, Any]
 LogSink = Callable[[LogEntry], None]
 # logging.Handler has no formatException; the Formatter does.
@@ -30,12 +32,14 @@ class LogBus(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            message = record.getMessage()
+            # Redacted here, once, for everything the app shows or exports: library errors carry
+            # signed addresses and the occasional token in their text and tracebacks.
+            message = redact_text(record.getMessage())
             trace = ""
             if record.exc_info:
-                trace = _FORMATTER.formatException(record.exc_info)
+                trace = redact_text(_FORMATTER.formatException(record.exc_info))
             elif record.exc_text:
-                trace = record.exc_text
+                trace = redact_text(record.exc_text)
             entries: list[LogEntry] = []
             first, *rest = message.splitlines() or [""]
             entries.append(

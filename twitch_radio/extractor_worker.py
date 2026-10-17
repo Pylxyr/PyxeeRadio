@@ -111,6 +111,37 @@ def _project(info: dict[str, Any], ydl: Any = None) -> dict[str, Any]:
     return out
 
 
+class _StderrLogger:
+    """yt-dlp's `logger` hook, so its warnings reach the parent.
+
+    Without a logger, `no_warnings` (set unless LOG_LEVEL=DEBUG) makes yt-dlp discard every warning,
+    including the ones that say the JS challenge solver could not be downloaded or run - after which
+    it carries on with whatever formats need no solving. The parent picks the notable lines out of
+    stderr (extraction.worker_line_level); everything else stays at DEBUG there.
+    """
+
+    def __init__(self, verbose: bool) -> None:
+        self._verbose = verbose
+
+    def _write(self, prefix: str, message: object) -> None:
+        for line in str(message).splitlines() or [""]:
+            sys.stderr.write(f"{prefix}{line}\n")
+        sys.stderr.flush()
+
+    def debug(self, message: object) -> None:
+        if self._verbose:
+            self._write("", message)
+
+    def info(self, message: object) -> None:
+        self.debug(message)
+
+    def warning(self, message: object) -> None:
+        self._write("WARNING: ", message)
+
+    def error(self, message: object) -> None:
+        self._write("ERROR: ", message)
+
+
 class _Worker:
     def __init__(self, out: TextIO) -> None:
         self._out = out
@@ -124,7 +155,7 @@ class _Worker:
         key = json.dumps(options, sort_keys=True)
         instance = self._instances.get(key)
         if instance is None:
-            instance = yt_dlp.YoutubeDL(options)
+            instance = yt_dlp.YoutubeDL({**options, "logger": _StderrLogger(bool(options.get("verbose")))})
             self._instances[key] = instance
         return instance
 

@@ -16,6 +16,7 @@ from twitch_radio import ytdlp_loader
 from twitch_radio.config import BASE_DIR, DATA_DIR, Settings
 from twitch_radio.models import Track, youtube_thumbnail
 from twitch_radio.paths import hidden_subprocess_kwargs, is_frozen, source_root
+from twitch_radio.redact import one_line
 from twitch_radio.telemetry import counters
 
 # yt_dlp is deliberately NOT imported in this process. Every extraction runs in
@@ -81,6 +82,35 @@ _WORKER_START_TIMEOUT_SECONDS = 60.0
 # Short: a wedged worker is stuck inside yt-dlp/a JS runtime and isn't coming
 # back, so there's nothing to wait for.
 _WORKER_TERM_GRACE_SECONDS = 3.0
+
+# After a stream address turned out not to work (see Resolver.invalidate), the fast first attempt
+# is not tried again for that video for this long, and at most this many videos are remembered.
+_SKIP_FAST_SECONDS = 3600.0
+_SKIP_FAST_MAX = 256
+
+# yt-dlp warnings the worker prints are logged at DEBUG, except the ones that explain why a
+# lookup failed or got worse: a missing JS solver or runtime, a bot check, a refused address.
+_NOTABLE_WARNING_WORDS = (
+    "challenge",
+    "solver",
+    "js runtime",
+    "javascript",
+    "po token",
+    "sign in",
+    "not a bot",
+    "signature",
+    "requested format",
+    "http error 4",
+    "http error 5",
+)
+
+
+def worker_line_level(text: str) -> int:
+    """The log level for one line a yt-dlp worker wrote to stderr (see extractor_worker.py)."""
+    lowered = text.lower()
+    if lowered.startswith("warning:") and any(word in lowered for word in _NOTABLE_WARNING_WORDS):
+        return logging.WARNING
+    return logging.WARNING if "challenge solver" in lowered else logging.DEBUG
 
 
 def _clean_headers(raw: Any) -> dict[str, str]:
@@ -220,8 +250,7 @@ class _ExtractionWorker:
                     return
                 text = line.decode("utf-8", "replace").rstrip()
                 if text:
-                    level = logging.WARNING if "challenge solver" in text.lower() else logging.DEBUG
-                    log.log(level, "[ytdlp-worker-%d] %s", self._index, text)
+                    log.log(worker_line_level(text), "[ytdlp-worker-%d] %s", self._index, one_line(text, 400))
         except (asyncio.CancelledError, ValueError):
             raise
         except Exception:
@@ -229,7 +258,13 @@ class _ExtractionWorker:
 
     async def _read_json(self) -> dict[str, Any]:
         assert self._proc is not None and self._proc.stdout is not None
-        line = await self._proc.stdout.readline()
+        try:
+            line = await self._proc.stdout.readline()
+        except (ValueError, asyncio.LimitOverrunError) as exc:
+            # A reply longer than the reader's limit: the rest of it is still in the pipe, so the
+            # framing is gone. (A bare ValueError used to escape extract() and leave this worker
+            # neither idle nor discarded, alive for good.)
+            raise _WorkerCrashed(f"worker {self._index} sent a reply that was too long") from exc
         if not line:
             code = self._proc.returncode
             raise _WorkerCrashed(f"worker {self._index} closed stdout (exit code {code})")
@@ -416,6 +451,11 @@ class ProcessBackend(ExtractionBackend):
                 # A clean "yt-dlp couldn't do it" - the worker is fine.
                 self._release(worker)
                 raise
+            except Exception as exc:
+                # Anything else leaves the worker in an unknown state: recycle it, never leak it.
+                log.warning("Extraction worker failed unexpectedly (%s) - stopping it.", type(exc).__name__)
+                await self._discard(worker)
+                raise DownloadError(f"Extraction failed unexpectedly ({type(exc).__name__})") from exc
             else:
                 self._release(worker)
                 return info
@@ -476,6 +516,8 @@ class Resolver:
         # relying on this fast-path logic.
         self._fast_path_enabled = self._fast_client_enabled
         self._solver_hint_shown = False
+        # Videos whose fast-attempt address did not play (see invalidate), and when that was noted.
+        self._skip_fast: dict[str, float] = {}
 
         self._ytdl_options: dict[str, Any] | None = None
         self._fast_ytdl_options: dict[str, Any] | None = None
@@ -485,6 +527,32 @@ class Resolver:
 
     def worker_status(self) -> dict[str, Any]:
         return self._backend.status()
+
+    def invalidate(self, webpage_url: str) -> None:
+        """Forgets what is known about one video because the stream address it gave did not play.
+
+        Without this a retry is answered from the cache with the same dead address, and the fast,
+        JS-less first attempt that produced it is made again: one bad answer would then fail every
+        retry. Afterwards the next resolve asks yt-dlp afresh and, for a while, goes straight to the
+        full attempt (the default client list with the JS solver) instead of the fast one.
+        """
+        url = webpage_url.strip()
+        for key in [k for k, (track, _) in self._cache.items() if k == url or track.webpage_url == url]:
+            del self._cache[key]
+        if not self._fast_path_enabled:
+            return  # the first attempt already is the full one
+        now = time.monotonic()
+        self._skip_fast = {k: at for k, at in self._skip_fast.items() if now - at < _SKIP_FAST_SECONDS}
+        self._skip_fast[url] = now
+        while len(self._skip_fast) > _SKIP_FAST_MAX:
+            del self._skip_fast[next(iter(self._skip_fast))]
+        log.info("Stream address for %s did not play; the next lookup skips the fast attempt.", one_line(url))
+
+    def _fast_attempt_allowed(self, query: str) -> bool:
+        if not self._fast_path_enabled:
+            return False
+        noted = self._skip_fast.get(query)
+        return noted is None or time.monotonic() - noted >= _SKIP_FAST_SECONDS
 
     async def aclose(self) -> None:
         """Async because the worker processes need reaping. Called from the
@@ -573,7 +641,7 @@ class Resolver:
         return bool(item and item.get("url"))
 
     async def _extract_info(self, query: str) -> dict[str, Any]:
-        if self._fast_path_enabled:
+        if self._fast_attempt_allowed(query):
             start = time.monotonic()
             try:
                 info = await self._extract_info_via(

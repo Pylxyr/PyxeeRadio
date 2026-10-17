@@ -114,6 +114,31 @@ def basic(exe: str, env: dict[str, str], bin_dir: str | None) -> None:
             worker.kill()
 
 
+def headless(exe: str, env: dict[str, str]) -> None:
+    """The channel the desktop app's Logs tab and command answers depend on: `--headless` speaks JSON
+    lines on stdout. Stdin is closed at once, which makes the core stop itself (the app is "gone"),
+    so this needs no network and ends in well under a second."""
+    done = run(exe, ["--headless"], env, stdin="", timeout=90)
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    messages: list[dict[str, object]] = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            value = None
+        messages.append(value if isinstance(value, dict) else {})
+    kinds = [str(m.get("t")) for m in messages]
+    check(
+        done.returncode == 0, "--headless stops cleanly when the app closes stdin", f"exit {done.returncode}"
+    )
+    check(
+        bool(lines) and all(messages), "every stdout line of --headless is a JSON object", done.stdout[-300:]
+    )
+    check(kinds[:1] == ["hello"], "--headless starts with a hello message", str(kinds[:3]))
+    check("log" in kinds, "--headless sends log messages (what the Logs tab shows)", str(kinds))
+    check("phase" in kinds, "--headless reports its phase", str(kinds))
+
+
 def resolve(exe: str, env: dict[str, str], home: Path, url: str) -> None:
     done = run(exe, ["--resolve-test", url], {**env, "YTDLP_EXTRACT_TIMEOUT_SECONDS": "120"}, timeout=400)
     report = last_json(done.stdout)
@@ -166,6 +191,7 @@ def main() -> int:
     print(f"exe: {exe}\nhome: {home}")
     if not args.resolve_only:
         basic(exe, env, args.bin)
+        headless(exe, env)
     if args.resolve or args.resolve_only:
         resolve(exe, env, home, args.url)
     print("\nFAILED: " + "; ".join(failures) if failures else "\nall checks passed")

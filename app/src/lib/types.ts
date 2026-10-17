@@ -78,6 +78,8 @@ export interface Snapshot {
   http: { up: boolean; base: string; stream: string; overlay: string; settings: string };
   workers: { alive: number; size: number };
   health?: { loop_lag_ms?: number };
+  /** The latest song that could not be played (`at` is Unix seconds); null/absent before the first. */
+  last_failure?: { at: number; message: string } | null;
 }
 
 export interface Preflight {

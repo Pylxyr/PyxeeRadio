@@ -23,11 +23,19 @@ import sys
 from twitch_radio.config import Settings, load_settings
 from twitch_radio.logbus import LogBus
 from twitch_radio.paths import prepend_bundled_bins_to_path
+from twitch_radio.redact import redact_text
 
 # One generation of 5 MB x 3 is days of INFO logging; the file used to grow
 # without bound.
 _LOG_FILE_BYTES = 5 * 1024 * 1024
 _LOG_FILE_BACKUPS = 3
+
+
+class _RedactingFormatter(logging.Formatter):
+    """The console and the log file get the same redaction the Logs tab does (see logbus.LogBus)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_text(super().format(record))
 
 
 def configure_logging(settings: Settings, *, console: bool = True, bus: LogBus | None = None) -> None:
@@ -43,7 +51,7 @@ def configure_logging(settings: Settings, *, console: bool = True, bus: LogBus |
                 encoding="utf-8",
             )
         )
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    formatter = _RedactingFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     for h in handlers:
         h.setFormatter(formatter)
     root = logging.getLogger()

@@ -325,6 +325,7 @@ class BotRuntime:
             pause_when_no_listeners=s.pause_when_no_listeners,
             overlay_delay_seconds=s.overlay_delay_seconds,
         )
+        player.set_track_invalidator(self._resolver.invalidate)
         suggester = RadioSuggester(self._resolver)
         player.set_radio_suggester(suggester.suggest)
         player.set_radio_played_notifier(suggester.note_played)
@@ -621,6 +622,7 @@ class BotRuntime:
                 "next_ready": player.next_ready,
             }
         base = f"http://{LOCAL_HOST}:{s.nowplaying_port}"
+        failure = player.last_failure if player is not None else None
         return {
             "t": "state",
             "phase": self._phase,
@@ -657,4 +659,7 @@ class BotRuntime:
                 )
             },
             "health": {"loop_lag_ms": round(lag_ms, 1)},
+            # The latest song that could not be played, so the dashboard can say so when it happens:
+            # a request is acknowledged as "queued" long before it is known to be playable.
+            "last_failure": {"at": failure[0], "message": failure[1]} if failure else None,
         }

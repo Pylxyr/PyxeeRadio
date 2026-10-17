@@ -3,7 +3,7 @@
 import { api } from './api';
 import { applyAppearance, watchSystemTheme } from './theme.svelte';
 import { addLogs, resetUnseen, setLogs } from './logs.svelte';
-import type { AppInfo, AppUpdate, BotStatus, Preflight, Prefs, Snapshot, YtdlpReport } from './types';
+import type { AppInfo, AppUpdate, BotStatus, LogEntry, Preflight, Prefs, Snapshot, YtdlpReport } from './types';
 
 export type Tab = 'dashboard' | 'logs' | 'settings';
 
@@ -100,6 +100,17 @@ export async function startBot(): Promise<void> {
   bot.status = await api.start();
 }
 
+// A song is acknowledged as "queued" long before it is known to be playable, so a failure to load it
+// arrives later, in the report. `at` only goes up; what was already there when the window opened is
+// history, not news (see init()).
+let failureSeenAt = 0;
+export function noteFailure(snap: Snapshot | null): void {
+  const failure = snap?.last_failure;
+  if (!failure || failure.at <= failureSeenAt) return;
+  failureSeenAt = failure.at;
+  toast(failure.message, 'err');
+}
+
 let stopWatching: (() => void) | null = null;
 const unlisten: (() => void)[] = [];
 
@@ -113,27 +124,64 @@ export async function init(): Promise<() => void> {
   bot.status = current.status;
   bot.snap = current.state;
   bot.snapAt = Date.now();
-  setLogs(await api.getLogs());
-  resetUnseen(); // history from before the window opened isn't news
+  failureSeenAt = Math.max(failureSeenAt, current.state?.last_failure?.at ?? 0);
 
-  let lastPhase = bot.status.phase;
-  unlisten.push(
-    await api.onStatus((next) => {
+  try {
+    // Listening comes first, the snapshot second. The shell sends every line once, in a batch; a line
+    // produced between asking for the snapshot and starting to listen would be in neither. The ids
+    // make a line that is in both harmless (see logs.svelte.ts).
+    // A batch that arrives before the snapshot's answer is held back and replayed after it, so the
+    // snapshot (which replaces what is shown) cannot erase it.
+    let snapshotApplied = false;
+    const early: LogEntry[][] = [];
+    unlisten.push(
+      await api.onLogs((batch) => {
+        if (snapshotApplied) addLogs(batch, ui.tab === 'logs');
+        else early.push(batch);
+      }),
+    );
+    setLogs(await api.getLogs());
+    resetUnseen(); // history from before the window opened isn't news
+    snapshotApplied = true;
+    for (const batch of early.splice(0)) addLogs(batch, false);
+    await listenToShell(bot.status.phase);
+  } catch (error) {
+    for (const stop of unlisten.splice(0)) stop(); // no half-registered listeners left behind
+    stopWatching?.();
+    console.error('PyxeeRadio could not finish loading', error);
+    throw error;
+  }
+  return startHousekeeping();
+}
+
+async function listenToShell(initialPhase: BotStatus['phase']): Promise<void> {
+  let lastPhase = initialPhase;
+  // One at a time, each recorded as soon as it exists: if a later one fails, init() can still stop this one.
+  const add = async (pending: Promise<() => void>) => {
+    unlisten.push(await pending);
+  };
+  await add(
+    api.onStatus((next) => {
       bot.status = next;
       if (next.phase === 'stopped' || next.phase === 'error') bot.snap = null;
       if (next.phase !== lastPhase && ['stopped', 'running', 'error'].includes(next.phase)) void refreshPreflight(true);
       lastPhase = next.phase;
     }),
-    await api.onState((next) => {
+  );
+  await add(
+    api.onState((next) => {
       bot.snap = next;
       bot.snapAt = Date.now();
+      noteFailure(next);
     }),
-    await api.onLogs((batch) => addLogs(batch, ui.tab === 'logs')),
-    await api.onPrefs(applyPrefs),
-    await api.onAppUpdate((result) => (upd.app = result)),
-    await api.onYtdlpUpdate((result) => (upd.ytdlp = result)),
-    await api.onCloseRequested(() => (ui.closeAsk = true)),
   );
+  await add(api.onPrefs(applyPrefs));
+  await add(api.onAppUpdate((result) => (upd.app = result)));
+  await add(api.onYtdlpUpdate((result) => (upd.ytdlp = result)));
+  await add(api.onCloseRequested(() => (ui.closeAsk = true)));
+}
+
+function startHousekeeping(): () => void {
   api.lastAppUpdate().then((result) => {
     if (result) upd.app = result;
   }).catch(() => {});
